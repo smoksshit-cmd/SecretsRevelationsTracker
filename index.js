@@ -1,4 +1,3 @@
-\
 /**
  * Secrets & Revelations Tracker (SillyTavern Extension)
  * - Per-chat secrets storage (chatMetadata)
@@ -517,35 +516,7 @@ ${formatList(mutualLines)}
     $('#srt_open_drawer').on('click', () => openDrawer(true));
     $('#srt_export_json').on('click', () => exportJson());
     $('#srt_import_json').on('click', () => importJson());
-  }
-    }
 
-    // Right column for UI-ish extensions
-    $('#extensions_settings2').append(html);
-
-    // Init values
-    const s = getSettings();
-    $('#srt_enabled').prop('checked', !!s.enabled);
-    $('#srt_show_widget').prop('checked', !!s.showWidget);
-
-    // Handlers
-    $('#srt_enabled').on('input', async (ev) => {
-      const { saveSettingsDebounced } = ctx();
-      s.enabled = Boolean($(ev.currentTarget).prop('checked'));
-      saveSettingsDebounced();
-      await updateInjectedPrompt();
-    });
-
-    $('#srt_show_widget').on('input', async (ev) => {
-      const { saveSettingsDebounced } = ctx();
-      s.showWidget = Boolean($(ev.currentTarget).prop('checked'));
-      saveSettingsDebounced();
-      await renderWidget();
-    });
-
-    $('#srt_open_drawer').on('click', () => openDrawer(true));
-    $('#srt_export_json').on('click', () => exportJson());
-    $('#srt_import_json').on('click', () => importJson());
   }
 
   function wireChatEvents() {
