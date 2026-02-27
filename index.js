@@ -32,6 +32,7 @@
   const defaultSettings = Object.freeze({
     enabled: true,
     showWidget: true,
+    collapsed: false,
     // Where to place the injected tracker text:
     position: EXT_PROMPT_TYPES.IN_PROMPT,
     depth: 0,
@@ -93,7 +94,7 @@
   }
 
   function formatList(lines) {
-    if (!lines.length) return '[none]';
+    if (!lines.length) return '[нет]';
     return lines.map(x => `- ${x}`).join('\n');
   }
 
@@ -127,28 +128,28 @@
     if (userLeverage > npcLeverage) balance = '{{user}}';
 
     return [
-`[SECRETS & REVELATIONS TRACKER]
+`[ТРЕКЕР СЕКРЕТОВ И РАСКРЫТИЙ]
 
-Track secrets, hidden information, and discoveries between {{user}} and NPCs. Update when secrets are revealed, discovered, or used.
+Отслеживай секреты, скрытую информацию и открытия между {{user}} и NPC. Обновляй, когда тайны раскрываются, обнаруживаются или используются.
 
-<SECRET CATEGORIES>
-- 🔓 Раскрытые (Known to {{user}})
-- 🔒 Скрытые (Hidden from {{user}})
-- 💣 Опасные (Could cause major consequences)
-- 💔 Личные (Emotional/vulnerable secrets)
-- 🗡️ Компромат (Can be used as leverage)
-</SECRET CATEGORIES>
+<КАТЕГОРИИ СЕКРЕТОВ>
+- 🔓 Раскрытые (известно {{user}})
+- 🔒 Скрытые (неизвестно {{user}})
+- 💣 Опасные (может привести к серьёзным последствиям)
+- 💔 Личные (эмоциональные/уязвимые тайны)
+- 🗡️ Компромат (можно использовать как рычаг давления)
+</КАТЕГОРИИ СЕКРЕТОВ>
 
-<TRACKING>
-- Total Secrets: [${hidden} hidden / ${revealed} revealed]
-- {{user}}'s secrets known to NPC:
+<ОТСЛЕЖИВАНИЕ>
+- Всего секретов: [${hidden} скрытых / ${revealed} известных {{user}}]
+- Секреты {{user}}, известные NPC:
 ${formatList(npcKnowsUserLines)}
-- NPC's secrets known to {{user}}:
+- Секреты NPC, известные {{user}}:
 ${formatList(userKnowsNpcLines)}
-- Mutual secrets (shared):
+- Общие секреты (знают оба):
 ${formatList(mutualLines)}
-- Leverage Balance: [${balance}]
-</TRACKING>
+- Баланс компромата: [${balance}]
+</ОТСЛЕЖИВАНИЕ>
 `
     ].join('\n');
   }
@@ -173,13 +174,22 @@ ${formatList(mutualLines)}
     if ($('#srt_fab').length) return;
     $('body').append(`
       <div id="srt_fab">
-        <button type="button" id="srt_fab_btn" title="Secrets Tracker">
+        <button type="button" id="srt_fab_btn" title="Открыть трекер секретов">
           🔐 <span class="srt-count" id="srt_fab_revealed">0</span> /
           <span class="srt-count-hidden" id="srt_fab_hidden">0</span>
         </button>
+        <button type="button" id="srt_fab_hide" title="Скрыть виджет">✕</button>
       </div>
     `);
     $('#srt_fab_btn').on('click', () => openDrawer(true));
+    $('#srt_fab_hide').on('click', async () => {
+      const s = getSettings();
+      const { saveSettingsDebounced } = ctx();
+      s.showWidget = false;
+      saveSettingsDebounced();
+      await renderWidget();
+      toastr.info('Виджет скрыт (можно включить обратно в настройках расширения)');
+    });
   }
 
   function ensureDrawer() {
@@ -190,7 +200,7 @@ ${formatList(mutualLines)}
         <header>
           <div class="topline">
             <div class="title">🔐 СЕКРЕТЫ И ТАЙНЫ</div>
-            <button id="srt_close" title="Close">✕</button>
+            <button id="srt_close" title="Закрыть">✕</button>
           </div>
           <div class="sub" id="srt_subtitle"></div>
         </header>
@@ -198,9 +208,9 @@ ${formatList(mutualLines)}
         <div class="content" id="srt_content"></div>
 
         <div class="footer">
-          <button id="srt_quick_export">Export</button>
-          <button id="srt_quick_import">Import</button>
-          <button id="srt_close2">Close</button>
+          <button id="srt_quick_export">Экспорт</button>
+          <button id="srt_quick_import">Импорт</button>
+          <button id="srt_close2">Закрыть</button>
         </div>
       </aside>
     `);
@@ -251,9 +261,9 @@ ${formatList(mutualLines)}
     const tagIcon = TAGS[item.tag]?.icon ?? '';
     const toggle =
       kind === 'npc'
-        ? `<label title="Known to {{user}}"><input type="checkbox" class="srt_toggle_known" data-kind="npc" data-id="${item.id}" ${item.knownToUser ? 'checked' : ''}></label>`
+        ? `<label title="Известно {{user}}"><input type="checkbox" class="srt_toggle_known" data-kind="npc" data-id="${item.id}" ${item.knownToUser ? 'checked' : ''}></label>`
         : kind === 'user'
-          ? `<label title="Known to NPC"><input type="checkbox" class="srt_toggle_known" data-kind="user" data-id="${item.id}" ${item.knownToNpc ? 'checked' : ''}></label>`
+          ? `<label title="Известно NPC"><input type="checkbox" class="srt_toggle_known" data-kind="user" data-id="${item.id}" ${item.knownToNpc ? 'checked' : ''}></label>`
           : '';
 
     return `
@@ -261,7 +271,7 @@ ${formatList(mutualLines)}
         <div class="tag">${tagIcon}</div>
         <div class="txt">${escapeHtml(item.text)}</div>
         ${toggle}
-        <button class="srt_delete" data-kind="${kind}" data-id="${item.id}" title="Delete">🗑️</button>
+        <button class="srt_delete" data-kind="${kind}" data-id="${item.id}" title="Удалить">🗑️</button>
       </div>
     `;
   }
@@ -271,7 +281,7 @@ ${formatList(mutualLines)}
     const state = await getChatState();
 
     const npcName = getActiveNpcNameForUi();
-    $('#srt_subtitle').text(`Chat: ${npcName}  •  (data is saved per chat)`);
+    $('#srt_subtitle').text(`Чат: ${npcName}  •  (данные сохраняются отдельно для каждого чата)`);
 
     const revealed = state.npcSecrets.filter(s => !!s.knownToUser).length + state.userSecrets.length + state.mutualSecrets.length;
     const hidden = state.npcSecrets.filter(s => !s.knownToUser).length;
@@ -290,10 +300,10 @@ ${formatList(mutualLines)}
           ${state.npcSecrets.map(s => renderItemRow(s, 'npc')).join('') || '<div class="item"><div class="txt" style="opacity:.75">—</div></div>'}
         </div>
         <div class="addrow">
-          <input type="text" id="srt_add_npc_text" placeholder="New NPC secret…">
+          <input type="text" id="srt_add_npc_text" placeholder="Новый секрет NPC…">
           <select id="srt_add_npc_tag">${tagOptionsHtml('none')}</select>
-          <label title="Already revealed to {{user}}"><input type="checkbox" id="srt_add_npc_known"> revealed</label>
-          <button id="srt_add_npc_btn">Add</button>
+          <label title="Уже известно {{user}}"><input type="checkbox" id="srt_add_npc_known"> известно</label>
+          <button id="srt_add_npc_btn">Добавить</button>
         </div>
       </div>
 
@@ -303,22 +313,22 @@ ${formatList(mutualLines)}
           ${state.userSecrets.map(s => renderItemRow(s, 'user')).join('') || '<div class="item"><div class="txt" style="opacity:.75">—</div></div>'}
         </div>
         <div class="addrow">
-          <input type="text" id="srt_add_user_text" placeholder="New {{user}} secret…">
+          <input type="text" id="srt_add_user_text" placeholder="Новый секрет {{user}}…">
           <select id="srt_add_user_tag">${tagOptionsHtml('none')}</select>
-          <label title="Known to NPC"><input type="checkbox" id="srt_add_user_known"> known</label>
-          <button id="srt_add_user_btn">Add</button>
+          <label title="Известно NPC"><input type="checkbox" id="srt_add_user_known"> известно</label>
+          <button id="srt_add_user_btn">Добавить</button>
         </div>
       </div>
 
       <div class="section">
-        <h4>🤝 Mutual secrets (shared)</h4>
+        <h4>🤝 Общие секреты</h4>
         <div class="list">
           ${state.mutualSecrets.map(s => renderItemRow(s, 'mutual')).join('') || '<div class="item"><div class="txt" style="opacity:.75">—</div></div>'}
         </div>
         <div class="addrow">
-          <input type="text" id="srt_add_mutual_text" placeholder="New mutual secret…">
+          <input type="text" id="srt_add_mutual_text" placeholder="Новый общий секрет…">
           <select id="srt_add_mutual_tag">${tagOptionsHtml('none')}</select>
-          <button id="srt_add_mutual_btn">Add</button>
+          <button id="srt_add_mutual_btn">Добавить</button>
         </div>
       </div>
     `;
@@ -352,7 +362,7 @@ ${formatList(mutualLines)}
       const text = String($('#srt_add_npc_text').val() ?? '').trim();
       const tag = String($('#srt_add_npc_tag').val() ?? 'none');
       const known = Boolean($('#srt_add_npc_known').prop('checked'));
-      if (!text) return toastr.warning('Enter secret text');
+      if (!text) return toastr.warning('Введите текст секрета');
       state.npcSecrets.unshift({ id: makeId(), text, tag, knownToUser: known });
       $('#srt_add_npc_text').val('');
       $('#srt_add_npc_known').prop('checked', false);
@@ -362,7 +372,7 @@ ${formatList(mutualLines)}
       const text = String($('#srt_add_user_text').val() ?? '').trim();
       const tag = String($('#srt_add_user_tag').val() ?? 'none');
       const known = Boolean($('#srt_add_user_known').prop('checked'));
-      if (!text) return toastr.warning('Enter secret text');
+      if (!text) return toastr.warning('Введите текст секрета');
       state.userSecrets.unshift({ id: makeId(), text, tag, knownToNpc: known });
       $('#srt_add_user_text').val('');
       $('#srt_add_user_known').prop('checked', false);
@@ -371,7 +381,7 @@ ${formatList(mutualLines)}
     if (kind === 'mutual') {
       const text = String($('#srt_add_mutual_text').val() ?? '').trim();
       const tag = String($('#srt_add_mutual_tag').val() ?? 'none');
-      if (!text) return toastr.warning('Enter secret text');
+      if (!text) return toastr.warning('Введите текст секрета');
       state.mutualSecrets.unshift({ id: makeId(), text, tag });
       $('#srt_add_mutual_text').val('');
     }
@@ -419,12 +429,12 @@ ${formatList(mutualLines)}
   async function exportJson() {
     const state = await getChatState();
     const data = JSON.stringify(state, null, 2);
-    await ctx().Popup.show.text('SRT Export (copy this JSON)', `<pre style="white-space:pre-wrap">${escapeHtml(data)}</pre>`);
+    await ctx().Popup.show.text('Экспорт SRT (скопируйте JSON)', `<pre style="white-space:pre-wrap">${escapeHtml(data)}</pre>`);
   }
 
   async function importJson() {
     const { Popup, saveMetadata, chatMetadata } = ctx();
-    const raw = await Popup.show.input('SRT Import', 'Paste previously exported JSON:', '');
+    const raw = await Popup.show.input('Импорт SRT', 'Вставьте ранее экспортированный JSON:', '');
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw);
@@ -437,11 +447,11 @@ ${formatList(mutualLines)}
       chatMetadata[CHAT_KEY] = parsed;
       await saveMetadata();
       await updateInjectedPrompt();
-      toastr.success('Imported');
+      toastr.success('Импортировано');
       renderDrawer();
     } catch (e) {
       console.error('[SRT] import failed', e);
-      toastr.error('Invalid JSON');
+      toastr.error('Неверный JSON');
     }
   }
 
@@ -449,35 +459,41 @@ ${formatList(mutualLines)}
 
   async function mountSettingsUi() {
     const html = `
-      <div class="srt-settings-block">
-        <div class="srt-title">🔐 Secrets &amp; Revelations Tracker</div>
-
-        <div class="srt-row">
-          <label class="checkbox_label">
-            <input type="checkbox" id="srt_enabled">
-            <span>Enable prompt injection</span>
-          </label>
+      <div class="srt-settings-block" id="srt_settings_block">
+        <div class="srt-title">
+          <span>🔐 Трекер секретов и раскрытий</span>
+          <button type="button" id="srt_collapse_btn" title="Свернуть/развернуть">▾</button>
         </div>
 
-        <div class="srt-row">
-          <label class="checkbox_label">
-            <input type="checkbox" id="srt_show_widget">
-            <span>Show floating widget</span>
-          </label>
-        </div>
+        <div class="srt-body">
+          <div class="srt-row">
+            <label class="checkbox_label">
+              <input type="checkbox" id="srt_enabled">
+              <span>Включить инъекцию в промпт</span>
+            </label>
+          </div>
 
-        <div class="srt-row srt-row-slim">
-          <button class="menu_button" id="srt_open_drawer">Open Tracker</button>
-          <button class="menu_button" id="srt_export_json">Export JSON</button>
-          <button class="menu_button" id="srt_import_json">Import JSON</button>
-        </div>
+          <div class="srt-row">
+            <label class="checkbox_label">
+              <input type="checkbox" id="srt_show_widget">
+              <span>Показывать плавающий виджет (🔐)</span>
+            </label>
+          </div>
 
-        <div class="srt-hint">
-          Tips:
-          <ul>
-            <li>Secrets are saved <b>per chat</b> (chat metadata).</li>
-            <li>Prompt injection uses <code>setExtensionPrompt()</code> so nothing is added to your chat log.</li>
-          </ul>
+          <div class="srt-row srt-row-slim">
+            <button class="menu_button" id="srt_open_drawer">Открыть трекер</button>
+            <button class="menu_button" id="srt_export_json">Экспорт JSON</button>
+            <button class="menu_button" id="srt_import_json">Импорт JSON</button>
+          </div>
+
+          <div class="srt-hint">
+            Подсказки:
+            <ul>
+              <li>Секреты сохраняются <b>отдельно для каждого чата</b> (chat metadata).</li>
+              <li>Инъекция использует <code>setExtensionPrompt()</code>, поэтому в чат-лог ничего не добавляется.</li>
+              <li>Виджет (🔐) можно быстро скрыть крестиком прямо на нём.</li>
+            </ul>
+          </div>
         </div>
       </div>
     `;
@@ -497,6 +513,22 @@ ${formatList(mutualLines)}
     const s = getSettings();
     $('#srt_enabled').prop('checked', !!s.enabled);
     $('#srt_show_widget').prop('checked', !!s.showWidget);
+
+    // collapsed state
+    if (s.collapsed) {
+      $('#srt_settings_block').addClass('srt-collapsed');
+      $('#srt_collapse_btn').text('▸');
+    }
+
+    $('#srt_collapse_btn').on('click', () => {
+      const { saveSettingsDebounced } = ctx();
+      const block = $('#srt_settings_block');
+      const nowCollapsed = !block.hasClass('srt-collapsed');
+      block.toggleClass('srt-collapsed', nowCollapsed);
+      $('#srt_collapse_btn').text(nowCollapsed ? '▸' : '▾');
+      s.collapsed = nowCollapsed;
+      saveSettingsDebounced();
+    });
 
     // Handlers
     $('#srt_enabled').on('input', async (ev) => {

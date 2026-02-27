@@ -9,7 +9,20 @@
 .srt-title {
   font-weight: 800;
   margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
+.srt-title button {
+  border: 1px solid var(--SmartThemeBorderColor);
+  background: transparent;
+  color: var(--SmartThemeBodyTextColor);
+  border-radius: 8px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.srt-collapsed .srt-body { display: none; }
 .srt-row { margin: 6px 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .srt-row-slim button { padding: 6px 10px; }
 .srt-hint { opacity: 0.9; font-size: 0.9em; margin-top: 8px; }
@@ -22,6 +35,7 @@
   bottom: 110px;
   z-index: 9999;
   display: none;
+  user-select: none;
 }
 #srt_fab button {
   border: 1px solid rgba(231, 76, 60, 0.55);
@@ -33,6 +47,19 @@
   font-size: 12px;
   cursor: pointer;
   box-shadow: 0 0 15px rgba(231, 76, 60, 0.2);
+}
+#srt_fab #srt_fab_hide {
+  position: absolute;
+  right: -6px;
+  top: -8px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(231, 76, 60, 0.45);
+  background: rgba(0,0,0,0.55);
+  font-size: 12px;
+  line-height: 20px;
 }
 #srt_fab .srt-count {
   color: #2ecc71;
@@ -82,6 +109,63 @@
   font-size: 11px;
   opacity: 0.9;
 }
+#srt_drawer button {
+  border: 1px solid rgba(231, 76, 60, 0.35);
+  background: rgba(255,255,255,0.06);
+  color: #eee;
+  border-radius: 10px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-family: Consolas, monospace;
+}
+#srt_drawer button:hover { background: rgba(255,255,255,0.10); }
+
+#srt_drawer .footer {
+  padding: 10px 12px;
+  border-top: 1px solid rgba(231, 76, 60, 0.25);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+#srt_drawer .item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  margin-bottom: 6px;
+  background: rgba(0,0,0,0.18);
+}
+#srt_drawer .item .tag { width: 16px; text-align: center; opacity: 0.95; }
+#srt_drawer .item .txt { flex: 1; font-size: 11px; line-height: 1.35; }
+#srt_drawer .item input[type="checkbox"] { transform: translateY(1px); }
+
+#srt_drawer .addrow {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+}
+#srt_drawer .addrow input[type="text"] {
+  grid-column: 1 / -1;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.06);
+  color: #eee;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-family: Consolas, monospace;
+}
+#srt_drawer .addrow select {
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.06);
+  color: #eee;
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-family: Consolas, monospace;
+}
+#srt_drawer .addrow label { font-size: 11px; opacity: 0.95; }
 #srt_drawer .content {
   padding: 12px;
   overflow: auto;
