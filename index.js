@@ -14,6 +14,11 @@
   const CHAT_KEY = 'srt_state_v1';
   const PROMPT_TAG = 'SRT_SECRETS_TRACKER';
 
+  const FAB_POS_KEY = 'srt_fab_pos_v1';
+  const FAB_MARGIN = 8; // px, keep widget reachable
+  let lastFabDragTs = 0;
+
+
   // These enums are exported by ST core, but we keep local fallbacks to avoid brittle imports.
   const EXT_PROMPT_TYPES = Object.freeze({
     NONE: -1,
@@ -182,7 +187,14 @@ ${formatList(mutualLines)}
         <button type="button" id="srt_fab_hide" title="Скрыть виджет">✕</button>
       </div>
     `);
-    $('#srt_fab_btn').on('click', () => openDrawer(true));
+    $('#srt_fab_btn').on('click', (ev) => {
+      if (Date.now() - lastFabDragTs < 350) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+      openDrawer(true);
+    });
     $('#srt_fab_hide').on('click', async () => {
       const s = getSettings();
       const { saveSettingsDebounced } = ctx();
@@ -191,7 +203,165 @@ ${formatList(mutualLines)}
       await renderWidget();
       toastr.info('Виджет скрыт (можно включить обратно в настройках расширения)');
     });
+
+    initFabDrag();
+    applyFabPosition();
+
   }
+
+  function applyFabPosition() {
+    const el = document.getElementById('srt_fab');
+    if (!el) return;
+
+    // Ensure we use left/top positioning (easier for drag) instead of right/bottom.
+    const rect = el.getBoundingClientRect();
+    if (!el.style.left && !el.style.top) {
+      el.style.left = Math.max(FAB_MARGIN, Math.min(window.innerWidth - rect.width - FAB_MARGIN, rect.left)) + 'px';
+      el.style.top = Math.max(FAB_MARGIN, Math.min(window.innerHeight - rect.height - FAB_MARGIN, rect.top)) + 'px';
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+    }
+
+    try {
+      const raw = localStorage.getItem(FAB_POS_KEY);
+      if (!raw) return;
+      const pos = JSON.parse(raw);
+      if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return;
+
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+
+      const width = rect.width || el.offsetWidth || 60;
+      const height = rect.height || el.offsetHeight || 60;
+
+      const left = Math.round(pos.x * (w - width));
+      const top = Math.round(pos.y * (h - height));
+
+      el.style.left = clamp(left, FAB_MARGIN, w - width - FAB_MARGIN) + 'px';
+      el.style.top = clamp(top, FAB_MARGIN, h - height - FAB_MARGIN) + 'px';
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function saveFabPositionPx(leftPx, topPx) {
+    const el = document.getElementById('srt_fab');
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+
+    const width = rect.width || el.offsetWidth || 60;
+    const height = rect.height || el.offsetHeight || 60;
+
+    const x = (w - width) > 0 ? leftPx / (w - width) : 0;
+    const y = (h - height) > 0 ? topPx / (h - height) : 0;
+
+    const payload = { x: clamp01(x), y: clamp01(y) };
+    try {
+      localStorage.setItem(FAB_POS_KEY, JSON.stringify(payload));
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function initFabDrag() {
+    const fab = document.getElementById('srt_fab');
+    const handle = document.getElementById('srt_fab_btn');
+    if (!fab || !handle) return;
+    if (fab.dataset.dragInit === '1') return;
+    fab.dataset.dragInit = '1';
+
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+    let moved = false;
+    const MOVE_THRESHOLD = 6;
+
+    const onPointerMove = (ev) => {
+      if (ev.pointerId === undefined) return;
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!moved && (Math.abs(dx) + Math.abs(dy)) > MOVE_THRESHOLD) {
+        moved = true;
+        fab.classList.add('srt-dragging');
+      }
+      if (!moved) return;
+
+      const rect = fab.getBoundingClientRect();
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+
+      const newLeft = clamp(startLeft + dx, FAB_MARGIN, w - rect.width - FAB_MARGIN);
+      const newTop = clamp(startTop + dy, FAB_MARGIN, h - rect.height - FAB_MARGIN);
+
+      fab.style.left = newLeft + 'px';
+      fab.style.top = newTop + 'px';
+      fab.style.right = 'auto';
+      fab.style.bottom = 'auto';
+
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+
+    const endDrag = (ev) => {
+      try { handle.releasePointerCapture(ev.pointerId); } catch (_) {}
+      document.removeEventListener('pointermove', onPointerMove, { passive: false });
+      document.removeEventListener('pointerup', endDrag, { passive: true });
+      document.removeEventListener('pointercancel', endDrag, { passive: true });
+
+      if (moved) {
+        const left = parseInt(fab.style.left || '0', 10) || 0;
+        const top = parseInt(fab.style.top || '0', 10) || 0;
+        saveFabPositionPx(left, top);
+        lastFabDragTs = Date.now();
+      }
+      moved = false;
+      fab.classList.remove('srt-dragging');
+    };
+
+    handle.addEventListener('pointerdown', (ev) => {
+      // Only left button for mouse; touch is OK.
+      if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+
+      // Make sure we have left/top for math.
+      const rect = fab.getBoundingClientRect();
+      fab.style.left = Math.max(FAB_MARGIN, Math.min(window.innerWidth - rect.width - FAB_MARGIN, rect.left)) + 'px';
+      fab.style.top = Math.max(FAB_MARGIN, Math.min(window.innerHeight - rect.height - FAB_MARGIN, rect.top)) + 'px';
+      fab.style.right = 'auto';
+      fab.style.bottom = 'auto';
+
+      startX = ev.clientX;
+      startY = ev.clientY;
+      startLeft = parseInt(fab.style.left || '0', 10) || 0;
+      startTop = parseInt(fab.style.top || '0', 10) || 0;
+      moved = false;
+
+      try { handle.setPointerCapture(ev.pointerId); } catch (_) {}
+
+      document.addEventListener('pointermove', onPointerMove, { passive: false });
+      document.addEventListener('pointerup', endDrag, { passive: true });
+      document.addEventListener('pointercancel', endDrag, { passive: true });
+
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, { passive: false });
+
+    // Re-apply on resize/orientation change
+    let resizeT = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeT);
+      resizeT = setTimeout(() => applyFabPosition(), 120);
+    });
+  }
+
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+  function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+
 
   function ensureDrawer() {
     if ($('#srt_drawer').length) return;
@@ -237,6 +407,7 @@ ${formatList(mutualLines)}
   async function renderWidget() {
     const settings = getSettings();
     ensureFab();
+    applyFabPosition();
     if (!settings.showWidget) {
       $('#srt_fab').hide();
       return;
@@ -568,6 +739,7 @@ ${formatList(mutualLines)}
 
     eventSource.on(event_types.APP_READY, async () => {
       ensureFab();
+    applyFabPosition();
       ensureDrawer();
       await mountSettingsUi();
       await updateInjectedPrompt();

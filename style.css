@@ -36,7 +36,8 @@
   z-index: 9999;
   display: none;
   user-select: none;
-  touch-action: manipulation;
+  touch-action: none;
+  cursor: grab;
 }
 #srt_fab button {
   border: 1px solid rgba(231, 76, 60, 0.55);
@@ -59,6 +60,8 @@
     transform: translateY(-50%);
   }
   #srt_fab #srt_fab_btn {
+    touch-action: none;
+    user-select: none;
     width: 56px;
     height: 56px;
     padding: 0;
@@ -75,6 +78,8 @@
     letter-spacing: 0.2px;
   }
   #srt_fab #srt_fab_hide {
+    touch-action: none;
+    user-select: none;
     right: -4px;
     top: -6px;
     width: 20px;
@@ -84,6 +89,8 @@
   }
 }
 #srt_fab #srt_fab_hide {
+    touch-action: none;
+    user-select: none;
   position: absolute;
   right: -6px;
   top: -8px;
@@ -279,3 +286,9 @@
   cursor: pointer;
   font-family: Consolas, monospace;
 }
+
+
+#srt_fab.srt-dragging { cursor: grabbing; opacity: 0.92; }
+#srt_fab.srt-dragging #srt_fab_btn {
+    touch-action: none;
+    user-select: none; cursor: grabbing; }
