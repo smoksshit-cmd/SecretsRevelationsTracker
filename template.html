@@ -1,0 +1,31 @@
+<div class="srt-settings-block">
+  <div class="srt-title">🔐 Secrets &amp; Revelations Tracker</div>
+
+  <div class="srt-row">
+    <label class="checkbox_label">
+      <input type="checkbox" id="srt_enabled">
+      <span>Enable prompt injection</span>
+    </label>
+  </div>
+
+  <div class="srt-row">
+    <label class="checkbox_label">
+      <input type="checkbox" id="srt_show_widget">
+      <span>Show floating widget</span>
+    </label>
+  </div>
+
+  <div class="srt-row srt-row-slim">
+    <button class="menu_button" id="srt_open_drawer">Open Tracker</button>
+    <button class="menu_button" id="srt_export_json">Export JSON</button>
+    <button class="menu_button" id="srt_import_json">Import JSON</button>
+  </div>
+
+  <div class="srt-hint">
+    Tips:
+    <ul>
+      <li>Secrets are saved <b>per chat</b> (chat metadata).</li>
+      <li>Prompt injection uses <code>setExtensionPrompt()</code> so nothing is added to your chat log.</li>
+    </ul>
+  </div>
+</div>

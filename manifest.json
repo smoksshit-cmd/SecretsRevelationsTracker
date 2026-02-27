@@ -1,0 +1,11 @@
+{
+  "display_name": "Secrets & Revelations Tracker",
+  "loading_order": 55,
+  "js": "index.js",
+  "css": "style.css",
+  "author": "YOUR_NAME_HERE",
+  "version": "0.1.0",
+  "homePage": "https://github.com/YOUR_GITHUB/SillyTavern-SecretsRevelationsTracker",
+  "auto_update": true,
+  "minimum_client_version": "1.12.8"
+}
