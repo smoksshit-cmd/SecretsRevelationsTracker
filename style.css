@@ -36,6 +36,7 @@
   z-index: 9999;
   display: none;
   user-select: none;
+  touch-action: manipulation;
 }
 #srt_fab button {
   border: 1px solid rgba(231, 76, 60, 0.55);
@@ -47,6 +48,40 @@
   font-size: 12px;
   cursor: pointer;
   box-shadow: 0 0 15px rgba(231, 76, 60, 0.2);
+}
+
+/* Mobile-first: vertical quick access like the "heart" widgets */
+@media (max-width: 768px) {
+  #srt_fab {
+    right: 6px;
+    top: 50%;
+    bottom: auto;
+    transform: translateY(-50%);
+  }
+  #srt_fab #srt_fab_btn {
+    width: 56px;
+    height: 56px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    font-size: 18px;
+  }
+  #srt_fab .srt-mini {
+    font-size: 10px;
+    line-height: 10px;
+    letter-spacing: 0.2px;
+  }
+  #srt_fab #srt_fab_hide {
+    right: -4px;
+    top: -6px;
+    width: 20px;
+    height: 20px;
+    font-size: 11px;
+    line-height: 18px;
+  }
 }
 #srt_fab #srt_fab_hide {
   position: absolute;

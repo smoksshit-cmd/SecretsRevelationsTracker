@@ -175,8 +175,9 @@ ${formatList(mutualLines)}
     $('body').append(`
       <div id="srt_fab">
         <button type="button" id="srt_fab_btn" title="Открыть трекер секретов">
-          🔐 <span class="srt-count" id="srt_fab_revealed">0</span> /
-          <span class="srt-count-hidden" id="srt_fab_hidden">0</span>
+          <div>🔐</div>
+          <div class="srt-mini"><span class="srt-count" id="srt_fab_revealed">0</span> /
+          <span class="srt-count-hidden" id="srt_fab_hidden">0</span></div>
         </button>
         <button type="button" id="srt_fab_hide" title="Скрыть виджет">✕</button>
       </div>
@@ -208,6 +209,7 @@ ${formatList(mutualLines)}
         <div class="content" id="srt_content"></div>
 
         <div class="footer">
+          <button id="srt_quick_prompt">Промпт</button>
           <button id="srt_quick_export">Экспорт</button>
           <button id="srt_quick_import">Импорт</button>
           <button id="srt_close2">Закрыть</button>
@@ -216,6 +218,7 @@ ${formatList(mutualLines)}
     `);
 
     $('#srt_close, #srt_close2').on('click', () => openDrawer(false));
+    $('#srt_quick_prompt').on('click', () => showPromptPreview());
     $('#srt_quick_export').on('click', () => exportJson());
     $('#srt_quick_import').on('click', () => importJson());
   }
@@ -432,6 +435,12 @@ ${formatList(mutualLines)}
     await ctx().Popup.show.text('Экспорт SRT (скопируйте JSON)', `<pre style="white-space:pre-wrap">${escapeHtml(data)}</pre>`);
   }
 
+  async function showPromptPreview() {
+    const state = await getChatState();
+    const block = buildPromptBlock(state);
+    await ctx().Popup.show.text('Что отправляется в промпт (SRT)', `<pre style="white-space:pre-wrap;max-height:60vh;overflow:auto">${escapeHtml(block)}</pre>`);
+  }
+
   async function importJson() {
     const { Popup, saveMetadata, chatMetadata } = ctx();
     const raw = await Popup.show.input('Импорт SRT', 'Вставьте ранее экспортированный JSON:', '');
@@ -482,6 +491,7 @@ ${formatList(mutualLines)}
 
           <div class="srt-row srt-row-slim">
             <button class="menu_button" id="srt_open_drawer">Открыть трекер</button>
+            <button class="menu_button" id="srt_prompt_preview">Показать промпт</button>
             <button class="menu_button" id="srt_export_json">Экспорт JSON</button>
             <button class="menu_button" id="srt_import_json">Импорт JSON</button>
           </div>
@@ -492,6 +502,7 @@ ${formatList(mutualLines)}
               <li>Секреты сохраняются <b>отдельно для каждого чата</b> (chat metadata).</li>
               <li>Инъекция использует <code>setExtensionPrompt()</code>, поэтому в чат-лог ничего не добавляется.</li>
               <li>Виджет (🔐) можно быстро скрыть крестиком прямо на нём.</li>
+              <li>Кнопка «Показать промпт» работает и на телефоне — удобно для проверки без F12.</li>
             </ul>
           </div>
         </div>
@@ -546,6 +557,7 @@ ${formatList(mutualLines)}
     });
 
     $('#srt_open_drawer').on('click', () => openDrawer(true));
+    $('#srt_prompt_preview').on('click', () => showPromptPreview());
     $('#srt_export_json').on('click', () => exportJson());
     $('#srt_import_json').on('click', () => importJson());
 

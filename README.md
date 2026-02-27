@@ -1,37 +1,37 @@
-# Secrets & Revelations Tracker (SillyTavern Extension)
+# Трекер секретов и раскрытий (SillyTavern Extension)
 
-A lightweight **secrets tracker** for SillyTavern that helps you keep **who knows what** between **{{user}}** and the current **NPC**.
+Лёгкое UI‑расширение для SillyTavern, которое помогает держать в порядке **тайны/компромат/личные секреты** между **{{user}}** и текущим **NPC**.
 
-It provides:
-- A floating **tracker widget** + side drawer editor (optional)
-- Per-chat storage (uses **chat metadata**) so each chat keeps its own secrets
-- Automatic **prompt injection** via `setExtensionPrompt()` (no chat log pollution)
+## Что умеет
+- **Кликабельный плавающий значок** 🔐 (на телефоне закреплён справа по центру, как «сердечки/виджеты»)
+- Боковая панель‑редактор (drawer) для добавления/удаления/пометок «известно/неизвестно»
+- Хранит данные **отдельно для каждого чата** (через chat metadata)
+- Делает **скрытую инъекцию в промпт** через `setExtensionPrompt()` (ничего не добавляет в чат‑лог)
+- Кнопка **«Показать промпт»** — удобно тестировать на телефоне без F12
 
-> ⚠️ This extension is UI-only and runs in the browser context.
+> ⚠️ Расширение работает в браузере (UI‑слой). Никаких серверных модификаций не делает.
 
-## Install (local)
-1. Put this folder into:
-   - **Server-wide**: `public/scripts/extensions/third-party/`
-   - **User scope**: `data/<your-handle>/extensions/`
-2. Restart SillyTavern.
-3. Enable it in **Extensions**.
+## Установка (локально)
+1. Помести папку расширения в одну из директорий:
+   - **для всех**: `public/scripts/extensions/third-party/`
+   - **для пользователя**: `data/<твоя-папка>/extensions/`
+2. Перезапусти SillyTavern.
+3. Включи расширение в **Extensions**.
 
-## Install (from GitHub)
-Use SillyTavern's built-in extension installer with your repo URL once you upload it.
+## Установка (через GitHub)
+Залей репозиторий и установи по URL через встроенный установщик расширений SillyTavern.
 
-## Usage
-- Open the floating 🔐 widget (bottom-right) to add/edit secrets.
-- Toggle whether a secret is known (revealed).
-- The current summary is injected into the prompt each generation (unless disabled).
+## Как пользоваться
+- Нажми 🔐 → откроется трекер → добавь секреты.
+- Для секретов NPC можно отметить «известно {{user}}» (галочка).
+- Для секретов {{user}} можно отметить «известно NPC» (галочка).
+- Нажми **«Показать промпт»** (в настройках расширения или внутри панели) — увидишь, что именно уходит в модель.
 
-## Data model (per chat)
-Stored under `chatMetadata["srt_state_v1"]`:
-- `npcSecrets[]`: secrets *about NPC*, toggle `knownToUser`
-- `userSecrets[]`: secrets *about user*, toggle `knownToNpc`
-- `mutualSecrets[]`: shared secrets (known to both)
+## Где хранятся данные
+В метаданных чата: `chatMetadata["srt_state_v1"]`
+- `npcSecrets[]`: секреты NPC (`knownToUser`)
+- `userSecrets[]`: секреты {{user}} (`knownToNpc`)
+- `mutualSecrets[]`: общие секреты
 
-## License
+## Лицензия
 AGPL-3.0-or-later
-
-
-> Note: `template.html` is included for convenience but the extension UI is embedded in `index.js` (so it works in both user-scoped and server-scoped installs).
