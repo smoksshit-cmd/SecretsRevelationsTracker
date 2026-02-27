@@ -213,6 +213,10 @@ ${formatList(mutualLines)}
     const el = document.getElementById('srt_fab');
     if (!el) return;
 
+    // Do NOT keep CSS transforms on a draggable fixed widget.
+    // On mobile, transforms (e.g. translateY) cause the widget to "run away".
+    el.style.transform = 'none';
+
     // Ensure we use left/top positioning (easier for drag) instead of right/bottom.
     const rect = el.getBoundingClientRect();
     if (!el.style.left && !el.style.top) {
@@ -220,13 +224,20 @@ ${formatList(mutualLines)}
       el.style.top = Math.max(FAB_MARGIN, Math.min(window.innerHeight - rect.height - FAB_MARGIN, rect.top)) + 'px';
       el.style.right = 'auto';
       el.style.bottom = 'auto';
+      el.style.transform = 'none';
     }
 
     try {
       const raw = localStorage.getItem(FAB_POS_KEY);
-      if (!raw) return;
+      if (!raw) {
+        setFabDefaultPosition();
+        return;
+      }
       const pos = JSON.parse(raw);
-      if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return;
+      if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') {
+        setFabDefaultPosition();
+        return;
+      }
 
       const w = window.innerWidth;
       const h = window.innerHeight;
@@ -241,8 +252,9 @@ ${formatList(mutualLines)}
       el.style.top = clamp(top, FAB_MARGIN, h - height - FAB_MARGIN) + 'px';
       el.style.right = 'auto';
       el.style.bottom = 'auto';
+      el.style.transform = 'none';
     } catch (e) {
-      // ignore
+      setFabDefaultPosition();
     }
   }
 
@@ -266,6 +278,29 @@ ${formatList(mutualLines)}
     } catch (e) {
       // ignore
     }
+  }
+
+  function setFabDefaultPosition() {
+    const el = document.getElementById('srt_fab');
+    if (!el) return;
+
+    const rect = el.getBoundingClientRect();
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const width = rect.width || el.offsetWidth || 60;
+    const height = rect.height || el.offsetHeight || 60;
+
+    // Default: dock to the right, vertically centered ("как сердечко")
+    const left = w - width - FAB_MARGIN;
+    const top = (h - height) / 2;
+
+    el.style.left = clamp(left, FAB_MARGIN, w - width - FAB_MARGIN) + 'px';
+    el.style.top = clamp(top, FAB_MARGIN, h - height - FAB_MARGIN) + 'px';
+    el.style.right = 'auto';
+    el.style.bottom = 'auto';
+    el.style.transform = 'none';
+
+    saveFabPositionPx(parseInt(el.style.left || '0', 10) || 0, parseInt(el.style.top || '0', 10) || 0);
   }
 
   function initFabDrag() {
@@ -334,6 +369,7 @@ ${formatList(mutualLines)}
       fab.style.top = Math.max(FAB_MARGIN, Math.min(window.innerHeight - rect.height - FAB_MARGIN, rect.top)) + 'px';
       fab.style.right = 'auto';
       fab.style.bottom = 'auto';
+      fab.style.transform = 'none';
 
       startX = ev.clientX;
       startY = ev.clientY;
@@ -665,6 +701,7 @@ ${formatList(mutualLines)}
             <button class="menu_button" id="srt_prompt_preview">Показать промпт</button>
             <button class="menu_button" id="srt_export_json">Экспорт JSON</button>
             <button class="menu_button" id="srt_import_json">Импорт JSON</button>
+            <button class="menu_button" id="srt_reset_widget_pos">Сбросить позицию значка</button>
           </div>
 
           <div class="srt-hint">
@@ -731,6 +768,12 @@ ${formatList(mutualLines)}
     $('#srt_prompt_preview').on('click', () => showPromptPreview());
     $('#srt_export_json').on('click', () => exportJson());
     $('#srt_import_json').on('click', () => importJson());
+
+    $('#srt_reset_widget_pos').on('click', () => {
+      try { localStorage.removeItem(FAB_POS_KEY); } catch (_) {}
+      setFabDefaultPosition();
+      toastr.success('Позиция значка сброшена');
+    });
 
   }
 
