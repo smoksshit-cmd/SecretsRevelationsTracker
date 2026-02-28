@@ -241,29 +241,59 @@ ${fmt(state.mutualSecrets)}
 
       let addedNpc = 0, addedUser = 0, addedMutual = 0;
 
-      // Merge — avoid exact-text duplicates
-      const existingTexts = new Set([
-        ...state.npcSecrets.map(s => s.text.toLowerCase()),
-        ...state.userSecrets.map(s => s.text.toLowerCase()),
-        ...state.mutualSecrets.map(s => s.text.toLowerCase()),
-      ]);
+      // ── Fuzzy dedup helpers ──────────────────────────────────────────────────
+      // Нормализация: нижний регистр + убираем знаки препинания
+      const norm = s => s.toLowerCase().replace(/[^\wа-яёa-z0-9\s]/gi, '').replace(/\s+/g, ' ').trim();
+
+      // Общие слова (≥4 букв) между двумя строками / длина большей
+      function similarity(a, b) {
+        const na = norm(a), nb = norm(b);
+        // Прямое вхождение (одна фраза является частью другой)
+        if (na.includes(nb) || nb.includes(na)) return 1;
+        const wa = new Set(na.split(' ').filter(w => w.length >= 4));
+        const wb = new Set(nb.split(' ').filter(w => w.length >= 4));
+        if (!wa.size && !wb.size) return na === nb ? 1 : 0;
+        // Если слов мало — снижаем минимальный размер до 3 букв
+        if (wa.size < 2 || wb.size < 2) {
+          const wa2 = new Set(na.split(' ').filter(w => w.length >= 3));
+          const wb2 = new Set(nb.split(' ').filter(w => w.length >= 3));
+          let c2 = 0; for (const w of wa2) if (wb2.has(w)) c2++;
+          return c2 / Math.max(wa2.size, wb2.size);
+        }
+        let common = 0;
+        for (const w of wa) if (wb.has(w)) common++;
+        return common / Math.max(wa.size, wb.size);
+      }
+
+      const SIM_THRESHOLD = 0.45; // ≥45% совпадения слов → дубль
+
+      // Все существующие тексты (живое множество, пополняется при добавлении)
+      const existingPool = [
+        ...state.npcSecrets.map(s => s.text),
+        ...state.userSecrets.map(s => s.text),
+        ...state.mutualSecrets.map(s => s.text),
+      ];
+
+      function isDuplicate(text) {
+        return existingPool.some(ex => similarity(ex, text) >= SIM_THRESHOLD);
+      }
 
       for (const it of (parsed.npcSecrets || [])) {
-        if (!it.text || existingTexts.has(it.text.toLowerCase())) continue;
+        if (!it.text || isDuplicate(it.text)) continue;
         state.npcSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none', knownToUser: !!it.knownToUser });
-        existingTexts.add(it.text.toLowerCase());
+        existingPool.push(it.text);
         addedNpc++;
       }
       for (const it of (parsed.userSecrets || [])) {
-        if (!it.text || existingTexts.has(it.text.toLowerCase())) continue;
+        if (!it.text || isDuplicate(it.text)) continue;
         state.userSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none', knownToNpc: !!it.knownToNpc });
-        existingTexts.add(it.text.toLowerCase());
+        existingPool.push(it.text);
         addedUser++;
       }
       for (const it of (parsed.mutualSecrets || [])) {
-        if (!it.text || existingTexts.has(it.text.toLowerCase())) continue;
+        if (!it.text || isDuplicate(it.text)) continue;
         state.mutualSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none' });
-        existingTexts.add(it.text.toLowerCase());
+        existingPool.push(it.text);
         addedMutual++;
       }
 
