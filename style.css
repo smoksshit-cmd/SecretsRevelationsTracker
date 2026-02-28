@@ -209,7 +209,7 @@
   cursor: default;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
-  animation: srt-overlay-in 140ms ease forwards;
+  pointer-events: auto;
 }
 @keyframes srt-overlay-in {
   from { opacity: 0; }
@@ -225,8 +225,13 @@
   max-height: calc(100dvh - env(safe-area-inset-bottom, 0px));
   width: min(440px, 94vw);
   z-index: 10000;
-  transform: translateX(100%);
-  transition: transform 140ms ease-in-out;
+
+  /* Скрываем тремя методами — один из них точно сработает даже если ST переопределяет transform */
+  transform: translateX(110%);
+  visibility: hidden;
+  pointer-events: none;
+
+  transition: transform 150ms ease-in-out, visibility 0s linear 150ms;
   background: linear-gradient(135deg,#0d0d0d 0%,#1a1a2e 100%);
   border-left: 1px solid rgba(231,76,60,0.35);
   box-shadow: -20px 0 40px rgba(0,0,0,0.35);
@@ -235,11 +240,24 @@
   color: #eee;
   font-family: Consolas, monospace;
   box-sizing: border-box;
-  /* Изоляция — drawer не влияет на layout ST */
-  isolation: isolate;
-  contain: layout style;
 }
-#srt_drawer.open { transform: translateX(0); }
+
+/* Открытое состояние */
+#srt_drawer.open {
+  transform: translateX(0);
+  visibility: visible;
+  pointer-events: auto;
+  transition: transform 150ms ease-in-out, visibility 0s linear 0s;
+}
+
+/* Кнопки закрытия всегда кликабельны */
+#srt_drawer #srt_close,
+#srt_drawer #srt_close2 {
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  position: relative;
+  z-index: 1;
+}
 
 #srt_drawer header {
   padding: 12px 12px 8px 12px;
