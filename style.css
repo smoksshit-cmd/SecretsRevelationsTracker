@@ -105,7 +105,33 @@
   }
 }
 
-/* ── Drawer ─────────────────────────────────────────────────────────────────── */
+/* ── API settings section ───────────────────────────────────────────────────── */
+.srt-api-section {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--SmartThemeBorderColor);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.12);
+}
+.srt-api-title {
+  font-weight: 700;
+  font-size: 0.9em;
+  margin-bottom: 8px;
+}
+.srt-api-title small {
+  font-weight: 400;
+  opacity: 0.7;
+}
+.srt-api-section input[type="text"],
+.srt-api-section input[type="password"] {
+  background: var(--SmartThemeBlurTintColor, rgba(255,255,255,0.06));
+  border: 1px solid var(--SmartThemeBorderColor);
+  color: var(--SmartThemeBodyTextColor);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: Consolas, monospace;
+}
 #srt_drawer {
   position: fixed;
   right: 0; top: 0;
@@ -170,6 +196,12 @@
 }
 #srt_drawer #srt_scan_btn:disabled {
   opacity: 0.6; cursor: wait;
+}
+/* Debug button */
+#srt_drawer #srt_quick_debug {
+  background: rgba(155,89,182,0.12);
+  border: 1px solid rgba(155,89,182,0.40);
+  color: #bb8fce;
 }
 
 #srt_drawer .content { padding: 12px; overflow: auto; flex: 1; }
