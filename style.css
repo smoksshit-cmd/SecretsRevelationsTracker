@@ -33,13 +33,16 @@
 /* ── Floating widget (FAB) ──────────────────────────────────────────────────── */
 #srt_fab {
   position: fixed;
-  right: 14px;
-  bottom: 110px;
+  /* right/bottom — только fallback, JS всегда ставит left+top в px */
+  right: auto; bottom: auto;
+  left: calc(100vw - 78px); top: 50%;
   z-index: 9999;
   display: none;
   user-select: none;
   touch-action: none;
   cursor: grab;
+  /* Не позволяем выйти за правый/нижний край даже без JS */
+  max-width: 72px;
 }
 #srt_fab button {
   border: 1px solid rgba(231,76,60,0.55);
@@ -71,34 +74,47 @@
 #srt_fab .srt-count        { color: #2ecc71; font-weight: 800; }
 #srt_fab .srt-count-hidden { color: #e74c3c; font-weight: 800; }
 
-@media (max-width: 768px) {
-  #srt_fab { right: 6px; top: 50%; bottom: auto; transform: none; }
+/* ── Планшеты (481–1024px): кнопка крупнее, удобнее тапать ──────────────────── */
+@media (max-width: 1024px) and (min-width: 481px) {
   #srt_fab #srt_fab_btn {
     touch-action: none; user-select: none;
-    width: 56px; height: 56px; padding: 0;
+    width: 62px; height: 58px; padding: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 3px; font-size: 20px;
+  }
+  #srt_fab .srt-mini { font-size: 11px; line-height: 1; letter-spacing: 0.2px; }
+  #srt_fab #srt_fab_hide { right: -5px; top: -7px; width: 21px; height: 21px; font-size: 11px; line-height: 19px; }
+}
+
+/* ── Телефоны (≤480px) ───────────────────────────────────────────────────────── */
+@media (max-width: 480px) {
+  #srt_fab #srt_fab_btn {
+    touch-action: none; user-select: none;
+    width: 56px; height: 54px; padding: 0;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     gap: 2px; font-size: 18px;
   }
   #srt_fab .srt-mini { font-size: 10px; line-height: 10px; letter-spacing: 0.2px; }
   #srt_fab #srt_fab_hide { touch-action: none; user-select: none; right: -4px; top: -6px; width: 20px; height: 20px; font-size: 11px; line-height: 18px; }
+}
 
-  /* На мобиле учитываем строку браузера сверху и навигацию снизу */
+/* ── Мобиле + планшет: drawer safe-area ──────────────────────────────────────── */
+@media (max-width: 1024px) {
   #srt_drawer {
     top: env(safe-area-inset-top, 0px);
     height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
     max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
-    /* Дополнительный запас под адресную строку и навигацию браузера */
+    /* На планшете drawer чуть шире */
+    width: min(500px, 92vw);
     margin-bottom: 0;
   }
-
   #srt_drawer .footer {
-    /* Кнопки не уходят под навигацию */
     padding-bottom: max(10px, env(safe-area-inset-bottom, 10px));
     flex-wrap: wrap;
     gap: 5px;
   }
-
   #srt_drawer .footer button {
     font-size: 11px;
     padding: 7px 8px;
