@@ -1055,7 +1055,8 @@ ${history}
   // ─── Settings panel ──────────────────────────────────────────────────────────
 
   async function mountSettingsUi() {
-    if ($('#srt_enabled').length) return;
+    // Используем уникальный sentinel-ID вместо проверки на элемент который мог появиться из template.html
+    if ($('#srt_settings_block').length) return;
     const target = $('#extensions_settings2').length ? '#extensions_settings2' : '#extensions_settings';
     if (!$(target).length) { console.warn('[SRT] settings container not found'); return; }
 
@@ -1195,16 +1196,19 @@ ${history}
     }
     updateCharPreview();
 
-    $('#srt_open_drawer').on('click', () => openDrawer(true));
-    $('#srt_scan_settings_btn').on('click', scanChatForSecrets);
-    $('#srt_prompt_preview').on('click', showPromptPreview);
-    $('#srt_export_json').on('click', exportJson);
-    $('#srt_import_json').on('click', importJson);
-    $('#srt_reset_widget_pos').on('click', () => {
-      try { localStorage.removeItem(FAB_POS_KEY); } catch {}
-      setFabDefaultPosition();
-      toastr.success('Позиция сброшена');
-    });
+    // Делегирование на document — устойчиво к любому порядку рендеринга и template.html
+    $(document)
+      .off('click.srt_settings')
+      .on('click.srt_settings', '#srt_open_drawer',       () => openDrawer(true))
+      .on('click.srt_settings', '#srt_scan_settings_btn', () => scanChatForSecrets())
+      .on('click.srt_settings', '#srt_prompt_preview',    () => showPromptPreview())
+      .on('click.srt_settings', '#srt_export_json',       () => exportJson())
+      .on('click.srt_settings', '#srt_import_json',       () => importJson())
+      .on('click.srt_settings', '#srt_reset_widget_pos',  () => {
+        try { localStorage.removeItem(FAB_POS_KEY); } catch {}
+        setFabDefaultPosition();
+        toastr.success('Позиция сброшена');
+      });
   }
 
   // ─── Event wiring ────────────────────────────────────────────────────────────
