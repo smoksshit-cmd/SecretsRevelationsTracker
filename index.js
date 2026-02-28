@@ -158,22 +158,75 @@
     } catch { return ''; }
   }
 
-  // ─── AI generate — свой API или ST встроенный ─────────────────────────────────
+  // ─── AI API helpers ───────────────────────────────────────────────────────────
+
+  // Нормализует endpoint как в Love Score:
+  // "https://api.example.com/v1/chat/completions" → "https://api.example.com"
+  // "https://api.example.com/v1"                  → "https://api.example.com"
+  // "https://api.example.com"                     → "https://api.example.com"
+  function getBaseUrl() {
+    const s = getSettings();
+    return (s.apiEndpoint || '').trim()
+      .replace(/\/+$/, '')
+      .replace(/\/chat\/completions$/, '')
+      .replace(/\/v1$/, '');
+  }
+
+  async function fetchModelsForSelect() {
+    const base   = getBaseUrl();
+    const apiKey = (getSettings().apiKey || '').trim();
+    if (!base || !apiKey) throw new Error('Укажи Endpoint и API Key');
+    const resp = await fetch(`${base}/v1/models`, {
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    return (data.data || data.models || [])
+      .map(m => (typeof m === 'string' ? m : m.id))
+      .filter(Boolean)
+      .sort();
+  }
+
+  async function onRefreshModels() {
+    const $btn = $('#srt_refresh_models');
+    const $sel = $('#srt_api_model_select');
+    if (!$btn.length || !$sel.length) return;
+    $btn.prop('disabled', true).text('⏳');
+    try {
+      const models  = await fetchModelsForSelect();
+      const current = getSettings().apiModel || '';
+      $sel.html('<option value="">-- выбери модель --</option>');
+      models.forEach(id => {
+        const opt = document.createElement('option');
+        opt.value = id; opt.textContent = id;
+        if (id === current) opt.selected = true;
+        $sel.append(opt);
+      });
+      if (!models.length) toastr.warning('Список моделей пуст');
+      else toastr.success(`Загружено моделей: ${models.length}`);
+    } catch (e) {
+      toastr.error(`[SRT] Ошибка загрузки моделей: ${e.message}`);
+    } finally {
+      $btn.prop('disabled', false).text('🔄');
+    }
+  }
 
   async function aiGenerate(userPrompt, systemPrompt) {
-    const s = getSettings();
+    const s    = getSettings();
+    const base = getBaseUrl();
 
-    // Если задан свой эндпоинт — используем его
-    if (s.apiEndpoint && s.apiKey) {
-      const resp = await fetch(s.apiEndpoint, {
+    // Если задан свой API
+    if (base && s.apiKey) {
+      const url  = `${base}/v1/chat/completions`;
+      const resp = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${s.apiKey}`,
         },
         body: JSON.stringify({
-          model: s.apiModel || 'gpt-4o-mini',
-          max_tokens: 2048,
+          model:       s.apiModel || 'gpt-4o-mini',
+          max_tokens:  2048,
           temperature: 0.2,
           messages: [
             { role: 'system', content: systemPrompt },
@@ -184,14 +237,13 @@
 
       if (!resp.ok) {
         const err = await resp.text().catch(() => resp.statusText);
-        throw new Error(`API error ${resp.status}: ${err}`);
+        throw new Error(`API error ${resp.status}: ${err.slice(0, 300)}`);
       }
 
       const data = await resp.json();
-      // OpenAI-совместимый формат
       return data.choices?.[0]?.message?.content
           ?? data.choices?.[0]?.text
-          ?? data.content?.[0]?.text  // Anthropic формат
+          ?? data.content?.[0]?.text   // Anthropic
           ?? '';
     }
 
@@ -201,12 +253,10 @@
       try {
         return await c.generateRaw(userPrompt, null, false, false, systemPrompt, true);
       } catch (e) {
-        console.warn('[SRT] generateRaw failed, falling back', e);
+        console.warn('[SRT] generateRaw failed', e);
       }
     }
-    if (typeof c.Generate === 'function') {
-      return await c.Generate('quiet');
-    }
+    if (typeof c.Generate === 'function') return await c.Generate('quiet');
     throw new Error('Не задан API и нет встроенного generate в SillyTavern');
   }
 
@@ -848,8 +898,8 @@ ${history}
 
     // — Привязка чата —
     const boundKey = currentChatBoundKey();
-    const apiMode = (settings.apiEndpoint && settings.apiKey)
-      ? `🔌 Свой API: ${settings.apiEndpoint}\n   Модель: ${settings.apiModel || 'gpt-4o-mini'}`
+    const apiMode = getBaseUrl() && settings.apiKey
+      ? `🔌 Свой API: ${getBaseUrl()}/v1/chat/completions\n   Модель: ${settings.apiModel || 'gpt-4o-mini'}`
       : `🔧 Встроенный ST generateRaw`;
 
     const out = [
@@ -950,23 +1000,38 @@ ${history}
           </div>
 
           <div class="srt-api-section">
-            <div class="srt-api-title">⚙️ API для сканирования <small>(оставь пустым — будет использован встроенный ST)</small></div>
+            <div class="srt-api-title">⚙️ API для сканирования</div>
+            <div class="srt-api-hint">Вставь endpoint (с /v1 или без — не важно), введи ключ, загрузи список моделей кнопкой 🔄 и нажми «Сканировать». Если оставить пустым — используется встроенный ST.</div>
+
+            <span class="srt-api-label">Endpoint</span>
             <div class="srt-row">
-              <label style="min-width:70px">Endpoint:</label>
-              <input type="text" id="srt_api_endpoint" placeholder="https://api.openai.com/v1/chat/completions" value="${escapeHtml(s.apiEndpoint||'')}" style="flex:1">
+              <input type="text" id="srt_api_endpoint" class="srt-api-field" placeholder="https://api.openai.com/v1" value="${escapeHtml(s.apiEndpoint||'')}">
             </div>
+
+            <span class="srt-api-label">API Key</span>
             <div class="srt-row">
-              <label style="min-width:70px">API Key:</label>
-              <input type="password" id="srt_api_key" placeholder="sk-..." value="${s.apiKey||''}" style="flex:1">
-              <button type="button" id="srt_api_key_toggle" style="padding:4px 8px">👁</button>
+              <input type="password" id="srt_api_key" class="srt-api-field" placeholder="sk-..." value="${s.apiKey||''}">
+              <button type="button" id="srt_api_key_toggle" class="menu_button" style="padding:5px 10px;flex-shrink:0">👁</button>
             </div>
-            <div class="srt-row">
-              <label style="min-width:70px">Модель:</label>
-              <input type="text" id="srt_api_model" placeholder="gpt-4o-mini" value="${escapeHtml(s.apiModel||'gpt-4o-mini')}" style="flex:1">
+
+            <span class="srt-api-label">Модель</span>
+            <div class="srt-row" style="gap:6px">
+              <select id="srt_api_model_select" class="srt-api-select" style="flex:1">
+                ${s.apiModel
+                  ? `<option value="${escapeHtml(s.apiModel)}" selected>${escapeHtml(s.apiModel)}</option>`
+                  : '<option value="">-- нажми 🔄 для загрузки --</option>'}
+              </select>
+              <button id="srt_refresh_models" class="menu_button" style="padding:5px 10px;flex-shrink:0" title="Загрузить список моделей">🔄</button>
             </div>
-            <div class="srt-row">
-              <button class="menu_button" id="srt_api_test">🔌 Тест соединения</button>
-              <span id="srt_api_status" style="font-size:11px;opacity:0.8"></span>
+
+            <span class="srt-api-label">Персонаж</span>
+            <div id="srt_char_preview" class="srt-char-preview">
+              <img id="srt_char_avatar" src="" alt="" style="display:none">
+              <span id="srt_char_name" style="font-size:12px;opacity:.7">(откройте чат с персонажем)</span>
+            </div>
+
+            <div class="srt-row" style="margin-top:8px">
+              <span id="srt_api_status" style="font-size:11px;opacity:0.75;flex:1"></span>
             </div>
           </div>
           <div class="srt-row srt-row-slim">
@@ -1008,44 +1073,43 @@ ${history}
       ctx().saveSettingsDebounced();
     });
 
-    // API settings
-    const saveApi = () => {
-      s.apiEndpoint = $('#srt_api_endpoint').val().trim();
-      s.apiKey      = $('#srt_api_key').val().trim();
-      s.apiModel    = $('#srt_api_model').val().trim() || 'gpt-4o-mini';
-      ctx().saveSettingsDebounced();
-    };
-    $('#srt_api_endpoint').on('change', saveApi);
-    $('#srt_api_key').on('change', saveApi);
-    $('#srt_api_model').on('change', saveApi);
+    // API settings — сохраняем при любом изменении
+    $('#srt_api_endpoint').on('input', () => { s.apiEndpoint = $('#srt_api_endpoint').val().trim(); ctx().saveSettingsDebounced(); });
+    $('#srt_api_key').on('input',      () => { s.apiKey      = $('#srt_api_key').val().trim();      ctx().saveSettingsDebounced(); });
 
     $('#srt_api_key_toggle').on('click', () => {
       const inp = document.getElementById('srt_api_key');
       inp.type = inp.type === 'password' ? 'text' : 'password';
     });
 
-    $('#srt_api_test').on('click', async () => {
-      const $status = $('#srt_api_status');
-      const endpoint = $('#srt_api_endpoint').val().trim();
-      const key      = $('#srt_api_key').val().trim();
-      const model    = $('#srt_api_model').val().trim() || 'gpt-4o-mini';
-      if (!endpoint || !key) { $status.text('⚠️ Заполни endpoint и ключ'); return; }
-      $status.text('⏳ Проверяю…');
-      try {
-        const resp = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-          body: JSON.stringify({
-            model, max_tokens: 5, temperature: 0,
-            messages: [{ role: 'user', content: 'ping' }],
-          }),
-        });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        $status.text('✅ Соединение работает');
-      } catch (e) {
-        $status.text(`❌ Ошибка: ${e.message}`);
-      }
+    // Model select — сохраняем выбранную модель
+    $('#srt_api_model_select').on('change', () => {
+      s.apiModel = $('#srt_api_model_select').val();
+      ctx().saveSettingsDebounced();
     });
+
+    // Кнопка обновить модели
+    $('#srt_refresh_models').on('click', onRefreshModels);
+
+    // Обновить превью персонажа
+    function updateCharPreview() {
+      const c = ctx();
+      try {
+        const char = c.characters?.[c.characterId];
+        if (!char) return;
+        const $name   = $('#srt_char_name');
+        const $avatar = $('#srt_char_avatar');
+        $name.text(char.name || '');
+        const av = char.avatar || char.data?.avatar;
+        if (av && av !== 'none') {
+          $avatar.attr('src', `/characters/${av}`).show()
+            .on('error', function() { $(this).hide(); });
+        } else {
+          $avatar.hide();
+        }
+      } catch {}
+    }
+    updateCharPreview();
 
     $('#srt_open_drawer').on('click', () => openDrawer(true));
     $('#srt_scan_settings_btn').on('click', scanChatForSecrets);
