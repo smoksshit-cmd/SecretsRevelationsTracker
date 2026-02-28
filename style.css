@@ -199,6 +199,16 @@
 }
 /* ── Drawer ─────────────────────────────────────────────────────────────────── */
 
+/* Прозрачный оверлей под drawer — закрывает панель по клику вне неё */
+#srt_overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;   /* под drawer (10000), над ST */
+  background: transparent;
+  cursor: default;
+}
+
 #srt_drawer {
   position: fixed;
   right: 0; top: 0;
