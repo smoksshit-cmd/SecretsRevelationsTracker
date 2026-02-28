@@ -69,3 +69,5 @@ data/<твой-профиль>/extensions/SRT/
 Хранятся в `chatMetadata` под ключом `srt_state_v1__<charId>__<chatId>`.  
 Каждый чат изолирован — секреты одного персонажа не попадают к другому.
 
+Credits: Tim and Domineza - https://t.me/DarkNetPreset
+
