@@ -207,6 +207,35 @@
   border-radius: 7px;
 }
 
+/* Scan depth slider row */
+#srt_drawer .srt-scan-depth-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  opacity: 0.9;
+}
+#srt_drawer .srt-scan-depth-row label {
+  white-space: nowrap;
+  opacity: 0.85;
+}
+#srt_drawer .srt-scan-depth-row input[type="range"] {
+  flex: 1;
+  min-width: 60px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  accent-color: #2ecc71;
+  cursor: pointer;
+}
+#srt_drawer #srt_scan_depth_val {
+  min-width: 26px;
+  text-align: right;
+  color: #2ecc71;
+  font-weight: 700;
+}
+
 /* Autodetect toggle inside summary */
 .srt-autodetect-toggle {
   font-size: 11px;
