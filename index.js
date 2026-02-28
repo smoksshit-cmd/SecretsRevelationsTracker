@@ -41,7 +41,8 @@
     enabled:      true,
     showWidget:   true,
     collapsed:    false,
-    autoDetect:   true,   // авто-детект раскрытий после каждого сообщения
+    autoDetect:   true,
+    scanDepth:    30,   // сколько последних сообщений анализировать
     position:     EXT_PROMPT_TYPES.IN_PROMPT,
     depth:        0,
   });
@@ -199,7 +200,7 @@ ${fmt(state.mutualSecrets)}
 
   async function scanChatForSecrets() {
     if (scanInProgress) return toastr.warning('[SRT] Сканирование уже идёт…');
-    const history = getRecentMessages(50);
+    const history = getRecentMessages(getSettings().scanDepth || 30);
     if (!history) return toastr.warning('[SRT] История чата пуста');
 
     scanInProgress = true;
@@ -207,6 +208,19 @@ ${fmt(state.mutualSecrets)}
     $btn.prop('disabled', true).text('⏳ Анализ…');
 
     try {
+      const state = await getChatState();
+      const { saveMetadata } = ctx();
+
+      // Собираем уже известные секреты для передачи модели
+      const existingList = [
+        ...state.npcSecrets.map(s    => `[{{char}}] ${s.text}`),
+        ...state.userSecrets.map(s   => `[{{user}}] ${s.text}`),
+        ...state.mutualSecrets.map(s => `[общий] ${s.text}`),
+      ];
+      const existingBlock = existingList.length
+        ? `\nУЖЕ ИЗВЕСТНЫЕ СЕКРЕТЫ (не добавляй их повторно, даже другими словами):\n${existingList.map(x => `- ${x}`).join('\n')}\n`
+        : '';
+
       const system = `Ты аналитик RP-диалогов. Твоя задача — извлечь секреты, тайны и скрытую информацию из диалога.
 Верни ТОЛЬКО валидный JSON и ничего больше. Без преамбулы, без markdown-блоков.
 Формат:
@@ -225,7 +239,7 @@ ${fmt(state.mutualSecrets)}
 - knownToUser/knownToNpc = true если в диалоге явно видно, что персонаж об этом узнал
 - tag: dangerous — может навредить, personal — эмоциональный/личный, kompromat — рычаг давления
 - Если ничего не найдено — верни пустые массивы
-- НЕ добавляй секреты, которых нет в тексте`;
+- НЕ добавляй секреты, которых нет в тексте${existingBlock}`;
 
       const user = `Вот последние сообщения RP-чата:\n\n${history}\n\nИзвлеки все секреты, тайны и скрытую информацию.`;
 
@@ -235,9 +249,6 @@ ${fmt(state.mutualSecrets)}
       // Strip markdown fences if model added them
       const clean = raw.replace(/```json|```/gi, '').trim();
       const parsed = JSON.parse(clean);
-
-      const state = await getChatState();
-      const { saveMetadata } = ctx();
 
       let addedNpc = 0, addedUser = 0, addedMutual = 0;
 
@@ -588,6 +599,11 @@ ${fmt(state.mutualSecrets)}
         <div class="srt-scan-hint">
           Нажмите <b>🔍 Сканировать чат</b> — AI сам найдёт секреты в истории переписки.
         </div>
+        <div class="srt-scan-depth-row">
+          <label for="srt_scan_depth_slider">Глубина сканирования:</label>
+          <input type="range" id="srt_scan_depth_slider" min="10" max="200" step="10" value="${settings.scanDepth || 30}">
+          <span id="srt_scan_depth_val">${settings.scanDepth || 30}</span> сообщений
+        </div>
       </div>
 
       <div class="section">
@@ -645,6 +661,14 @@ ${fmt(state.mutualSecrets)}
     $('#srt_autodetect_cb').on('input', ev => {
       const s = getSettings();
       s.autoDetect = $(ev.currentTarget).prop('checked');
+      ctx().saveSettingsDebounced();
+    });
+
+    $('#srt_scan_depth_slider').on('input', ev => {
+      const val = parseInt($(ev.currentTarget).val(), 10);
+      $('#srt_scan_depth_val').text(val);
+      const s = getSettings();
+      s.scanDepth = val;
       ctx().saveSettingsDebounced();
     });
   }
@@ -750,6 +774,12 @@ ${fmt(state.mutualSecrets)}
           <div class="srt-row">
             <label class="checkbox_label"><input type="checkbox" id="srt_autodetect" ${s.autoDetect?'checked':''}><span>Авто-детект раскрытий по маркеру [REVEAL:...]</span></label>
           </div>
+          <div class="srt-row" style="gap:10px;align-items:center;">
+            <label style="white-space:nowrap">Глубина сканирования:</label>
+            <input type="range" id="srt_scan_depth" min="10" max="200" step="10" value="${s.scanDepth||30}" style="flex:1;min-width:80px;">
+            <span id="srt_scan_depth_display" style="min-width:30px;text-align:right">${s.scanDepth||30}</span>
+            <span>сообщ.</span>
+          </div>
           <div class="srt-row srt-row-slim">
             <button class="menu_button" id="srt_open_drawer">Открыть трекер</button>
             <button class="menu_button" id="srt_scan_settings_btn">🔍 Сканировать чат</button>
@@ -782,6 +812,12 @@ ${fmt(state.mutualSecrets)}
     $('#srt_enabled').on('input', async ev => { s.enabled = $(ev.currentTarget).prop('checked'); ctx().saveSettingsDebounced(); await updateInjectedPrompt(); });
     $('#srt_show_widget').on('input', async ev => { s.showWidget = $(ev.currentTarget).prop('checked'); ctx().saveSettingsDebounced(); await renderWidget(); });
     $('#srt_autodetect').on('input', ev => { s.autoDetect = $(ev.currentTarget).prop('checked'); ctx().saveSettingsDebounced(); });
+    $('#srt_scan_depth').on('input', ev => {
+      const val = parseInt($(ev.currentTarget).val(), 10);
+      $('#srt_scan_depth_display').text(val);
+      s.scanDepth = val;
+      ctx().saveSettingsDebounced();
+    });
 
     $('#srt_open_drawer').on('click', () => openDrawer(true));
     $('#srt_scan_settings_btn').on('click', scanChatForSecrets);
