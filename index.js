@@ -11,9 +11,9 @@
 (() => {
   'use strict';
 
-  const MODULE_KEY = 'secrets_revelations_tracker';
-  const CHAT_KEY   = 'srt_state_v1';
-  const PROMPT_TAG = 'SRT_SECRETS_TRACKER';
+  const MODULE_KEY  = 'secrets_revelations_tracker';
+  const CHAT_KEY    = 'srt_state_v1';
+  const PROMPT_TAG  = 'SRT_SECRETS_TRACKER';
   const FAB_POS_KEY = 'srt_fab_pos_v1';
   const FAB_MARGIN  = 8;
 
@@ -42,9 +42,13 @@
     showWidget:   true,
     collapsed:    false,
     autoDetect:   true,
-    scanDepth:    30,   // сколько последних сообщений анализировать
+    scanDepth:    30,
     position:     EXT_PROMPT_TYPES.IN_PROMPT,
     depth:        0,
+    // ── Свой API для сканирования ──
+    apiEndpoint:  '',   // напр. https://api.openai.com/v1/chat/completions
+    apiKey:       '',
+    apiModel:     'gpt-4o-mini',
   });
 
   // ─── helpers ────────────────────────────────────────────────────────────────
@@ -61,10 +65,30 @@
     return extensionSettings[MODULE_KEY];
   }
 
+  // Уникальный ключ для текущего чата — включает ID персонажа/группы чтобы секреты не утекли
+  function currentChatBoundKey() {
+    const c = ctx();
+    // ST хранит текущий файл чата в c.getCurrentChatId() или c.chatId
+    const chatId = (typeof c.getCurrentChatId === 'function' ? c.getCurrentChatId() : null)
+                   || c.chatId
+                   || 'unknown_chat';
+    const charId = c.characterId ?? c.groupId ?? 'unknown_char';
+    return `${CHAT_KEY}__${charId}__${chatId}`;
+  }
+
   async function getChatState() {
     const { chatMetadata, saveMetadata } = ctx();
-    if (!chatMetadata[CHAT_KEY]) {
-      chatMetadata[CHAT_KEY] = {
+    const key = currentChatBoundKey();
+
+    // Миграция: если есть старый плоский ключ — переносим и удаляем
+    if (chatMetadata[CHAT_KEY] && !chatMetadata[key]) {
+      chatMetadata[key] = chatMetadata[CHAT_KEY];
+      delete chatMetadata[CHAT_KEY];
+      await saveMetadata();
+    }
+
+    if (!chatMetadata[key]) {
+      chatMetadata[key] = {
         npcLabel:      '{{char}}',
         npcSecrets:    [],
         userSecrets:   [],
@@ -72,7 +96,7 @@
       };
       await saveMetadata();
     }
-    return chatMetadata[CHAT_KEY];
+    return chatMetadata[key];
   }
 
   function makeId()       { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`; }
@@ -117,11 +141,62 @@
     }).join('\n\n');
   }
 
-  // ─── generateRaw wrapper (works across ST versions) ─────────────────────────
+  // ─── Character card helper ───────────────────────────────────────────────────
 
-  async function stGenerate(userPrompt, systemPrompt) {
+  function getCharacterCard() {
     const c = ctx();
-    // ST ≥ 1.11 exposes generateRaw
+    try {
+      const char = c.characters?.[c.characterId];
+      if (!char) return '';
+      const parts = [];
+      if (char.name)        parts.push(`Имя: ${char.name}`);
+      if (char.description) parts.push(`Описание: ${char.description}`);
+      if (char.personality) parts.push(`Личность: ${char.personality}`);
+      if (char.scenario)    parts.push(`Сценарий: ${char.scenario}`);
+      if (char.mes_example) parts.push(`Примеры диалогов: ${char.mes_example}`);
+      return parts.join('\n\n');
+    } catch { return ''; }
+  }
+
+  // ─── AI generate — свой API или ST встроенный ─────────────────────────────────
+
+  async function aiGenerate(userPrompt, systemPrompt) {
+    const s = getSettings();
+
+    // Если задан свой эндпоинт — используем его
+    if (s.apiEndpoint && s.apiKey) {
+      const resp = await fetch(s.apiEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${s.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: s.apiModel || 'gpt-4o-mini',
+          max_tokens: 2048,
+          temperature: 0.2,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user',   content: userPrompt   },
+          ],
+        }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.text().catch(() => resp.statusText);
+        throw new Error(`API error ${resp.status}: ${err}`);
+      }
+
+      const data = await resp.json();
+      // OpenAI-совместимый формат
+      return data.choices?.[0]?.message?.content
+          ?? data.choices?.[0]?.text
+          ?? data.content?.[0]?.text  // Anthropic формат
+          ?? '';
+    }
+
+    // Иначе — ST встроенный generateRaw
+    const c = ctx();
     if (typeof c.generateRaw === 'function') {
       try {
         return await c.generateRaw(userPrompt, null, false, false, systemPrompt, true);
@@ -129,12 +204,10 @@
         console.warn('[SRT] generateRaw failed, falling back', e);
       }
     }
-    // Fallback: use /api/backends/... — ST has no stable raw endpoint,
-    // so we proxy through the extension's context generate
     if (typeof c.Generate === 'function') {
       return await c.Generate('quiet');
     }
-    throw new Error('No generate function available in SillyTavern context');
+    throw new Error('Не задан API и нет встроенного generate в SillyTavern');
   }
 
   // ─── PROMPT BLOCK ────────────────────────────────────────────────────────────
@@ -221,29 +294,50 @@ ${fmt(state.mutualSecrets)}
         ? `\nУЖЕ ИЗВЕСТНЫЕ СЕКРЕТЫ (не добавляй их повторно, даже другими словами):\n${existingList.map(x => `- ${x}`).join('\n')}\n`
         : '';
 
-      const system = `Ты аналитик RP-диалогов. Твоя задача — извлечь секреты, тайны и скрытую информацию из диалога.
-Верни ТОЛЬКО валидный JSON и ничего больше. Без преамбулы, без markdown-блоков.
-Формат:
+      const system = `Ты аналитик RP-диалогов. Извлекай ТОЛЬКО информацию которую один персонаж скрывает от другого или которая имеет значение для развития сюжета.
+
+ЧТО СЧИТАЕТСЯ СЕКРЕТОМ:
+- Факты о прошлом персонажа которые он скрывает (преступления, травмы, отношения)
+- Чувства/намерения которые персонаж не высказывает вслух
+- Информация которой владеет один персонаж но не другой
+- Зависимости, слабости, уязвимости
+- Планы, цели, скрытые мотивы
+- Компромат, тайны которые можно использовать как рычаг
+
+ЧТО НЕ ЯВЛЯЕТСЯ СЕКРЕТОМ:
+- Обычные факты открыто сказанные в диалоге
+- Описания обстановки, действий без скрытого смысла
+- Общеизвестные факты о персонаже
+
+Верни ТОЛЬКО валидный JSON без преамбулы и markdown-блоков:
 {
   "npcSecrets": [
-    {"text": "описание секрета {{char}}", "tag": "none|dangerous|personal|kompromat", "knownToUser": true|false}
+    {"text": "краткое описание (до 15 слов)", "tag": "none|dangerous|personal|kompromat", "knownToUser": true|false}
   ],
   "userSecrets": [
-    {"text": "описание секрета {{user}}", "tag": "none|dangerous|personal|kompromat", "knownToNpc": true|false}
+    {"text": "краткое описание (до 15 слов)", "tag": "none|dangerous|personal|kompromat", "knownToNpc": true|false}
   ],
   "mutualSecrets": [
-    {"text": "описание общего секрета", "tag": "none|dangerous|personal|kompromat"}
+    {"text": "краткое описание (до 15 слов)", "tag": "none|dangerous|personal|kompromat"}
   ]
 }
-Правила:
-- knownToUser/knownToNpc = true если в диалоге явно видно, что персонаж об этом узнал
-- tag: dangerous — может навредить, personal — эмоциональный/личный, kompromat — рычаг давления
-- Если ничего не найдено — верни пустые массивы
-- НЕ добавляй секреты, которых нет в тексте${existingBlock}`;
+Теги: dangerous=угроза жизни/серьёзный вред, personal=эмоциональный/личный, kompromat=рычаг давления
+knownToUser/knownToNpc=true ТОЛЬКО если в тексте явно видно что персонаж это узнал
+Если секретов нет — верни пустые массивы${existingBlock}`;
 
-      const user = `Вот последние сообщения RP-чата:\n\n${history}\n\nИзвлеки все секреты, тайны и скрытую информацию.`;
+      const charCard = getCharacterCard();
+      const charBlock = charCard
+        ? `\n\nКАРТОЧКА ПЕРСОНАЖА {{char}} (используй для понимания характера, мотивов и возможных секретов):\n${charCard}`
+        : '';
 
-      const raw = await stGenerate(user, system);
+      const user = `Вот последние сообщения RP-чата:${charBlock}
+
+━━━ ИСТОРИЯ ЧАТА ━━━
+${history}
+
+Извлеки все секреты, тайны и скрытую информацию. Также учти карточку персонажа — там могут быть упомянуты скрытые черты, прошлое или мотивы которые ещё не раскрылись в чате но присутствуют как скрытые секреты {{char}}.`;
+
+      const raw = await aiGenerate(user, system);
       if (!raw) throw new Error('Пустой ответ от модели');
 
       // Strip markdown fences if model added them
@@ -520,6 +614,7 @@ ${fmt(state.mutualSecrets)}
         <div class="content" id="srt_content"></div>
         <div class="footer">
           <button id="srt_scan_btn">🔍 Сканировать чат</button>
+          <button id="srt_quick_debug">🐛 Дебаг</button>
           <button id="srt_quick_prompt">Промпт</button>
           <button id="srt_quick_export">Экспорт</button>
           <button id="srt_quick_import">Импорт</button>
@@ -529,6 +624,7 @@ ${fmt(state.mutualSecrets)}
     `);
     $('#srt_close, #srt_close2').on('click', () => openDrawer(false));
     $('#srt_quick_prompt').on('click', showPromptPreview);
+    $('#srt_quick_debug').on('click', showDebugInfo);
     $('#srt_quick_export').on('click', exportJson);
     $('#srt_quick_import').on('click', importJson);
     $('#srt_scan_btn').on('click', scanChatForSecrets);
@@ -721,6 +817,78 @@ ${fmt(state.mutualSecrets)}
 
   // ─── Import / Export / Prompt preview ───────────────────────────────────────
 
+  async function showDebugInfo() {
+    const state   = await getChatState();
+    const settings = getSettings();
+    const depth   = settings.scanDepth || 30;
+
+    // — Что видит модель каждый ход (инжектируемый блок) —
+    const injected = buildPromptBlock(state);
+
+    // — Что уйдёт при сканировании —
+    const history = getRecentMessages(depth);
+    const existingList = [
+      ...state.npcSecrets.map(s    => `[{{char}}] ${s.text}`),
+      ...state.userSecrets.map(s   => `[{{user}}] ${s.text}`),
+      ...state.mutualSecrets.map(s => `[общий] ${s.text}`),
+    ];
+    const existingBlock = existingList.length
+      ? `\nУЖЕ ИЗВЕСТНЫЕ СЕКРЕТЫ (не добавляй их повторно, даже другими словами):\n${existingList.map(x => `- ${x}`).join('\n')}\n`
+      : '';
+
+    const scanSystem = `[SYSTEM PROMPT для сканирования]\n\nТы аналитик RP-диалогов. Извлекай ТОЛЬКО информацию которую один персонаж скрывает от другого...\n${existingBlock}`;
+
+    // — Авто-детект —
+    const autoInfo = settings.autoDetect
+      ? `✅ Включён\nТриггер: каждое сообщение {{char}} (MESSAGE_RECEIVED)\nРегекс: [REVEAL: текст] / [РАСКРЫТИЕ: текст]`
+      : `❌ Выключен`;
+
+    // — Карточка персонажа —
+    const card = getCharacterCard();
+
+    // — Привязка чата —
+    const boundKey = currentChatBoundKey();
+    const apiMode = (settings.apiEndpoint && settings.apiKey)
+      ? `🔌 Свой API: ${settings.apiEndpoint}\n   Модель: ${settings.apiModel || 'gpt-4o-mini'}`
+      : `🔧 Встроенный ST generateRaw`;
+
+    const out = [
+      '╔══════════════════════════════════════╗',
+      '║   SRT DEBUG — что уходит в модель    ║',
+      '╚══════════════════════════════════════╝',
+      '',
+      '━━━ 0. ПРИВЯЗКА ЧАТА ━━━',
+      `Ключ хранилища: ${boundKey}`,
+      `Режим API: ${apiMode}`,
+      '',
+      '━━━ 1. ИНЖЕКТИРУЕМЫЙ ПРОМПТ (каждый ход) ━━━',
+      '(модель видит это в каждом запросе пока включена инъекция)',
+      '',
+      injected,
+      '',
+      '━━━ 2. КАРТОЧКА ПЕРСОНАЖА ━━━',
+      card || '[карточка не найдена или пуста]',
+      '',
+      '━━━ 3. СИСТЕМНЫЙ ПРОМПТ ДЛЯ СКАНИРОВАНИЯ ━━━',
+      `(отправляется при нажатии "Сканировать", берёт последние ${depth} сообщений)`,
+      '',
+      scanSystem,
+      '',
+      '━━━ 4. ИСТОРИЯ ЧАТА ДЛЯ СКАНИРОВАНИЯ ━━━',
+      `(последние ${depth} сообщений, всего символов: ${history.length})`,
+      '',
+      history.length > 1500 ? history.slice(0, 1500) + '\n... [обрезано для превью]' : (history || '[история пуста]'),
+      '',
+      '━━━ 5. АВТО-ДЕТЕКТ РАСКРЫТИЙ ━━━',
+      autoInfo,
+    ].join('\n');
+
+    await ctx().Popup.show.text(
+      'SRT Debug — полный дамп запросов',
+      `<pre style="white-space:pre-wrap;font-size:11px;max-height:70vh;overflow:auto;font-family:Consolas,monospace">${escapeHtml(out)}</pre>`
+    );
+  }
+
   async function exportJson() {
     const state = await getChatState();
     await ctx().Popup.show.text('Экспорт SRT', `<pre style="white-space:pre-wrap">${escapeHtml(JSON.stringify(state,null,2))}</pre>`);
@@ -780,6 +948,27 @@ ${fmt(state.mutualSecrets)}
             <span id="srt_scan_depth_display" style="min-width:30px;text-align:right">${s.scanDepth||30}</span>
             <span>сообщ.</span>
           </div>
+
+          <div class="srt-api-section">
+            <div class="srt-api-title">⚙️ API для сканирования <small>(оставь пустым — будет использован встроенный ST)</small></div>
+            <div class="srt-row">
+              <label style="min-width:70px">Endpoint:</label>
+              <input type="text" id="srt_api_endpoint" placeholder="https://api.openai.com/v1/chat/completions" value="${escapeHtml(s.apiEndpoint||'')}" style="flex:1">
+            </div>
+            <div class="srt-row">
+              <label style="min-width:70px">API Key:</label>
+              <input type="password" id="srt_api_key" placeholder="sk-..." value="${s.apiKey||''}" style="flex:1">
+              <button type="button" id="srt_api_key_toggle" style="padding:4px 8px">👁</button>
+            </div>
+            <div class="srt-row">
+              <label style="min-width:70px">Модель:</label>
+              <input type="text" id="srt_api_model" placeholder="gpt-4o-mini" value="${escapeHtml(s.apiModel||'gpt-4o-mini')}" style="flex:1">
+            </div>
+            <div class="srt-row">
+              <button class="menu_button" id="srt_api_test">🔌 Тест соединения</button>
+              <span id="srt_api_status" style="font-size:11px;opacity:0.8"></span>
+            </div>
+          </div>
           <div class="srt-row srt-row-slim">
             <button class="menu_button" id="srt_open_drawer">Открыть трекер</button>
             <button class="menu_button" id="srt_scan_settings_btn">🔍 Сканировать чат</button>
@@ -817,6 +1006,45 @@ ${fmt(state.mutualSecrets)}
       $('#srt_scan_depth_display').text(val);
       s.scanDepth = val;
       ctx().saveSettingsDebounced();
+    });
+
+    // API settings
+    const saveApi = () => {
+      s.apiEndpoint = $('#srt_api_endpoint').val().trim();
+      s.apiKey      = $('#srt_api_key').val().trim();
+      s.apiModel    = $('#srt_api_model').val().trim() || 'gpt-4o-mini';
+      ctx().saveSettingsDebounced();
+    };
+    $('#srt_api_endpoint').on('change', saveApi);
+    $('#srt_api_key').on('change', saveApi);
+    $('#srt_api_model').on('change', saveApi);
+
+    $('#srt_api_key_toggle').on('click', () => {
+      const inp = document.getElementById('srt_api_key');
+      inp.type = inp.type === 'password' ? 'text' : 'password';
+    });
+
+    $('#srt_api_test').on('click', async () => {
+      const $status = $('#srt_api_status');
+      const endpoint = $('#srt_api_endpoint').val().trim();
+      const key      = $('#srt_api_key').val().trim();
+      const model    = $('#srt_api_model').val().trim() || 'gpt-4o-mini';
+      if (!endpoint || !key) { $status.text('⚠️ Заполни endpoint и ключ'); return; }
+      $status.text('⏳ Проверяю…');
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+          body: JSON.stringify({
+            model, max_tokens: 5, temperature: 0,
+            messages: [{ role: 'user', content: 'ping' }],
+          }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        $status.text('✅ Соединение работает');
+      } catch (e) {
+        $status.text(`❌ Ошибка: ${e.message}`);
+      }
     });
 
     $('#srt_open_drawer').on('click', () => openDrawer(true));
