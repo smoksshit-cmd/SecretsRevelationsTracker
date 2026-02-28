@@ -520,7 +520,7 @@ ${history}
     if (changed) {
       await saveMetadata();
       await updateInjectedPrompt();
-      if ($('#srt_drawer').hasClass('open')) renderDrawer();
+      if ($('#srt_drawer').hasClass('srt-open')) renderDrawer();
     }
   }
 
@@ -761,11 +761,11 @@ ${history}
         ov.addEventListener('touchstart', (e) => { e.preventDefault(); openDrawer(false); }, { passive: false, capture: true });
       }
       document.getElementById('srt_overlay').style.display = 'block';
-      drawer.classList.add('open');
+      drawer.classList.add('srt-open');
       drawer.setAttribute('aria-hidden', 'false');
       renderDrawer(); // async, но ошибки не блокируют открытие
     } else {
-      drawer.classList.remove('open');
+      drawer.classList.remove('srt-open');
       drawer.setAttribute('aria-hidden', 'true');
       const ov = document.getElementById('srt_overlay');
       if (ov) ov.style.display = 'none';
@@ -774,7 +774,7 @@ ${history}
 
   // ESC закрывает drawer
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && document.getElementById('srt_drawer')?.classList.contains('open'))
+    if (e.key === 'Escape' && document.getElementById('srt_drawer')?.classList.contains('srt-open'))
       openDrawer(false);
   });
 
@@ -1231,7 +1231,7 @@ ${history}
 
     eventSource.on(event_types.CHAT_CHANGED, async () => {
       await updateInjectedPrompt();
-      if ($('#srt_drawer').hasClass('open')) renderDrawer();
+      if ($('#srt_drawer').hasClass('srt-open')) renderDrawer();
     });
 
     // After {{char}} replies — check for [REVEAL:...] markers
