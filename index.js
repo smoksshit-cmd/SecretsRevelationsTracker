@@ -744,19 +744,26 @@ ${history}
     if (open) {
       $drawer.addClass('open').attr('aria-hidden', 'false');
       renderDrawer();
-      // Закрытие по тапу/клику вне панели — вешаем с небольшой задержкой
-      // чтобы текущий клик (на FAB) не закрыл её немедленно
+      // Вешаем на capture-фазу — срабатывает раньше чем ST может поглотить событие
+      const outsideHandler = (ev) => {
+        const drawer = document.getElementById('srt_drawer');
+        const fab    = document.getElementById('srt_fab');
+        if (!drawer) return;
+        // Тап внутри панели или по FAB — игнорируем
+        if (drawer.contains(ev.target) || (fab && fab.contains(ev.target))) return;
+        openDrawer(false);
+      };
+      // Небольшая задержка чтобы текущий клик (FAB) не закрыл сразу
       setTimeout(() => {
-        $(document).on('pointerdown.srt_outside', (ev) => {
-          const drawer = document.getElementById('srt_drawer');
-          if (drawer && !drawer.contains(ev.target)) {
-            openDrawer(false);
-          }
-        });
-      }, 50);
+        document._srtOutside = outsideHandler;
+        document.addEventListener('pointerdown', outsideHandler, { capture: true, passive: true });
+      }, 80);
     } else {
       $drawer.removeClass('open').attr('aria-hidden', 'true');
-      $(document).off('pointerdown.srt_outside');
+      if (document._srtOutside) {
+        document.removeEventListener('pointerdown', document._srtOutside, { capture: true });
+        document._srtOutside = null;
+      }
     }
   }
 
