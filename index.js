@@ -730,42 +730,46 @@ ${history}
         </div>
       </aside>
     `);
-    $('#srt_close, #srt_close2').on('click', () => openDrawer(false));
-    $('#srt_quick_prompt').on('click', showPromptPreview);
-    $('#srt_quick_debug').on('click', showDebugInfo);
-    $('#srt_quick_export').on('click', exportJson);
-    $('#srt_quick_import').on('click', importJson);
-    $('#srt_scan_btn').on('click', scanChatForSecrets);
+
+    // Используем делегирование на document — устойчиво к любым перерендерам
+    $(document)
+      .off('click.srt_close')
+      .on('click.srt_close', '#srt_close, #srt_close2', () => openDrawer(false));
+
+    $(document)
+      .off('click.srt_actions')
+      .on('click.srt_actions', '#srt_quick_prompt',  () => showPromptPreview())
+      .on('click.srt_actions', '#srt_quick_debug',   () => showDebugInfo())
+      .on('click.srt_actions', '#srt_quick_export',  () => exportJson())
+      .on('click.srt_actions', '#srt_quick_import',  () => importJson())
+      .on('click.srt_actions', '#srt_scan_btn',      () => scanChatForSecrets());
   }
 
   function openDrawer(open) {
     ensureDrawer();
     const $drawer = $('#srt_drawer');
     if (open) {
+      // Создаём оверлей один раз
+      if (!$('#srt_overlay').length) {
+        $('<div id="srt_overlay"></div>').insertBefore('#srt_drawer');
+      }
+      const $ov = $('#srt_overlay');
+      // Сбрасываем обработчики чтобы не дублировались
+      $ov.off('pointerdown click');
+      $ov.on('pointerdown click', (e) => { e.preventDefault(); e.stopPropagation(); openDrawer(false); });
+      $ov.show();
       $drawer.addClass('open').attr('aria-hidden', 'false');
       renderDrawer();
-      // Вешаем на capture-фазу — срабатывает раньше чем ST может поглотить событие
-      const outsideHandler = (ev) => {
-        const drawer = document.getElementById('srt_drawer');
-        const fab    = document.getElementById('srt_fab');
-        if (!drawer) return;
-        // Тап внутри панели или по FAB — игнорируем
-        if (drawer.contains(ev.target) || (fab && fab.contains(ev.target))) return;
-        openDrawer(false);
-      };
-      // Небольшая задержка чтобы текущий клик (FAB) не закрыл сразу
-      setTimeout(() => {
-        document._srtOutside = outsideHandler;
-        document.addEventListener('pointerdown', outsideHandler, { capture: true, passive: true });
-      }, 80);
     } else {
       $drawer.removeClass('open').attr('aria-hidden', 'true');
-      if (document._srtOutside) {
-        document.removeEventListener('pointerdown', document._srtOutside, { capture: true });
-        document._srtOutside = null;
-      }
+      $('#srt_overlay').hide();
     }
   }
+
+  // ESC закрывает drawer
+  $(document).on('keydown.srt', (e) => {
+    if (e.key === 'Escape' && $('#srt_drawer').hasClass('open')) openDrawer(false);
+  });
 
   async function renderWidget() {
     const settings = getSettings();
