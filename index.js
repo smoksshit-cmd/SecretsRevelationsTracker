@@ -4,7 +4,7 @@
  *
  * New features:
  *  - "Сканировать чат" — AI анализирует историю чата и предлагает секреты
- *  - Авто-детект раскрытий — после каждого сообщения NPC проверяет, не открылась ли тайна
+ *  - Авто-детект раскрытий — после каждого сообщения {{char}} проверяет, не открылась ли тайна
  *  - Инжектированный промпт явно просит модель сигнализировать [REVEAL:...] при раскрытии
  */
 
@@ -90,9 +90,9 @@
       if (c.characterId !== undefined && c.characters?.[c.characterId]?.name)
         return c.characters[c.characterId].name;
       if (c.groupId !== undefined)
-        return c.groups?.find?.(g => g.id === c.groupId)?.name ?? 'NPC';
+        return c.groups?.find?.(g => g.id === c.groupId)?.name ?? '{{char}}';
     } catch {}
-    return 'NPC';
+    return '{{char}}';
   }
 
   function formatList(lines) {
@@ -110,7 +110,7 @@
     if (!Array.isArray(chat) || !chat.length) return '';
     const slice = chat.slice(-n);
     return slice.map(m => {
-      const who = m.is_user ? '{{user}}' : (m.name || 'NPC');
+      const who = m.is_user ? '{{user}}' : (m.name || '{{char}}');
       const msg = (m.mes || '').trim();
       return `${who}: ${msg}`;
     }).join('\n\n');
@@ -150,11 +150,11 @@
 
     const npcLeverage  = leverageScore(userKnownToNpc);
     const userLeverage = leverageScore(npcKnownToUser);
-    const balance = npcLeverage > userLeverage ? 'NPC' : userLeverage > npcLeverage ? '{{user}}' : 'Равный';
+    const balance = npcLeverage > userLeverage ? '{{char}}' : userLeverage > npcLeverage ? '{{user}}' : 'Равный';
 
     return `[ТРЕКЕР СЕКРЕТОВ И РАСКРЫТИЙ]
 
-Отслеживай секреты, скрытую информацию и раскрытия между {{user}} и NPC.
+Отслеживай секреты, скрытую информацию и раскрытия между {{user}} и {{char}}.
 
 <КАТЕГОРИИ>
 🔓 Раскрыто (известно {{user}})  🔒 Скрыто  💣 Опасные  💔 Личные  🗡️ Компромат
@@ -163,10 +163,10 @@
 <СОСТОЯНИЕ>
 Всего: ${hidden} скрытых / ${revealed} известных {{user}}
 
-Секреты {{user}}, известные NPC:
+Секреты {{user}}, известные {{char}}:
 ${fmt(userKnownToNpc)}
 
-Секреты NPC, известные {{user}}:
+Секреты {{char}}, известные {{user}}:
 ${fmt(npcKnownToUser)}
 
 Общие секреты:
@@ -212,7 +212,7 @@ ${fmt(state.mutualSecrets)}
 Формат:
 {
   "npcSecrets": [
-    {"text": "описание секрета NPC", "tag": "none|dangerous|personal|kompromat", "knownToUser": true|false}
+    {"text": "описание секрета {{char}}", "tag": "none|dangerous|personal|kompromat", "knownToUser": true|false}
   ],
   "userSecrets": [
     {"text": "описание секрета {{user}}", "tag": "none|dangerous|personal|kompromat", "knownToNpc": true|false}
@@ -239,7 +239,7 @@ ${fmt(state.mutualSecrets)}
       const state = await getChatState();
       const { saveMetadata } = ctx();
 
-      let added = 0;
+      let addedNpc = 0, addedUser = 0, addedMutual = 0;
 
       // Merge — avoid exact-text duplicates
       const existingTexts = new Set([
@@ -252,26 +252,40 @@ ${fmt(state.mutualSecrets)}
         if (!it.text || existingTexts.has(it.text.toLowerCase())) continue;
         state.npcSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none', knownToUser: !!it.knownToUser });
         existingTexts.add(it.text.toLowerCase());
-        added++;
+        addedNpc++;
       }
       for (const it of (parsed.userSecrets || [])) {
         if (!it.text || existingTexts.has(it.text.toLowerCase())) continue;
         state.userSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none', knownToNpc: !!it.knownToNpc });
         existingTexts.add(it.text.toLowerCase());
-        added++;
+        addedUser++;
       }
       for (const it of (parsed.mutualSecrets || [])) {
         if (!it.text || existingTexts.has(it.text.toLowerCase())) continue;
         state.mutualSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none' });
         existingTexts.add(it.text.toLowerCase());
-        added++;
+        addedMutual++;
       }
+
+      const added = addedNpc + addedUser + addedMutual;
 
       await saveMetadata();
       await updateInjectedPrompt();
       await renderDrawer();
 
-      toastr.success(`[SRT] Найдено и добавлено секретов: ${added}`);
+      if (added === 0) {
+        toastr.info('🔍 Сканирование завершено — новых секретов не найдено', 'SRT', { timeOut: 4000 });
+      } else {
+        const parts = [];
+        if (addedNpc)    parts.push(`📖 {{char}}: ${addedNpc}`);
+        if (addedUser)   parts.push(`👁️ {{user}}: ${addedUser}`);
+        if (addedMutual) parts.push(`🤝 Общие: ${addedMutual}`);
+        toastr.success(
+          `Найдено и добавлено секретов: <b>${added}</b><br><small>${parts.join(' &nbsp;·&nbsp; ')}</small>`,
+          'SRT Сканирование',
+          { timeOut: 6000, escapeHtml: false }
+        );
+      }
     } catch (e) {
       console.error('[SRT] scan failed', e);
       toastr.error(`[SRT] Ошибка анализа: ${e.message}`);
@@ -299,7 +313,7 @@ ${fmt(state.mutualSecrets)}
       const revealedText = m[1].trim();
       if (!revealedText) continue;
 
-      // Try to match to an existing hidden NPC secret
+      // Try to match to an existing hidden {{char}} secret
       const candidate = state.npcSecrets.find(s =>
         !s.knownToUser &&
         (s.text.toLowerCase().includes(revealedText.toLowerCase()) ||
@@ -510,7 +524,7 @@ ${fmt(state.mutualSecrets)}
     const toggle = kind === 'npc'
       ? `<label title="Известно {{user}}"><input type="checkbox" class="srt_toggle_known" data-kind="npc"  data-id="${item.id}" ${item.knownToUser?'checked':''}> 🔓</label>`
       : kind === 'user'
-      ? `<label title="Известно NPC"><input type="checkbox" class="srt_toggle_known" data-kind="user" data-id="${item.id}" ${item.knownToNpc?'checked':''}> 🔓</label>`
+      ? `<label title="Известно {{char}}"><input type="checkbox" class="srt_toggle_known" data-kind="user" data-id="${item.id}" ${item.knownToNpc?'checked':''}> 🔓</label>`
       : '';
     return `
       <div class="item" data-kind="${kind}" data-id="${item.id}">
@@ -547,12 +561,12 @@ ${fmt(state.mutualSecrets)}
       </div>
 
       <div class="section">
-        <h4>📖 Секреты NPC <small>(🔓 = известно {{user}})</small></h4>
+        <h4>📖 Секреты {{char}} <small>(🔓 = известно {{user}})</small></h4>
         <div class="list">
           ${state.npcSecrets.map(s => renderItemRow(s,'npc')).join('') || '<div class="item"><div class="txt muted">—</div></div>'}
         </div>
         <div class="addrow">
-          <input type="text" id="srt_add_npc_text" placeholder="Новый секрет NPC…">
+          <input type="text" id="srt_add_npc_text" placeholder="Новый секрет {{char}}…">
           <select id="srt_add_npc_tag">${tagOptionsHtml('none')}</select>
           <label title="Уже известно {{user}}"><input type="checkbox" id="srt_add_npc_known"> известно</label>
           <button id="srt_add_npc_btn">Добавить</button>
@@ -560,14 +574,14 @@ ${fmt(state.mutualSecrets)}
       </div>
 
       <div class="section">
-        <h4>👁️ Секреты {{user}} <small>(🔓 = известно NPC)</small></h4>
+        <h4>👁️ Секреты {{user}} <small>(🔓 = известно {{char}})</small></h4>
         <div class="list">
           ${state.userSecrets.map(s => renderItemRow(s,'user')).join('') || '<div class="item"><div class="txt muted">—</div></div>'}
         </div>
         <div class="addrow">
           <input type="text" id="srt_add_user_text" placeholder="Новый секрет {{user}}…">
           <select id="srt_add_user_tag">${tagOptionsHtml('none')}</select>
-          <label title="Известно NPC"><input type="checkbox" id="srt_add_user_known"> известно</label>
+          <label title="Известно {{char}}"><input type="checkbox" id="srt_add_user_known"> известно</label>
           <button id="srt_add_user_btn">Добавить</button>
         </div>
       </div>
@@ -718,7 +732,7 @@ ${fmt(state.mutualSecrets)}
             <b>Как работает авто-режим:</b>
             <ul>
               <li>🔍 <b>Сканировать чат</b> — AI анализирует последние ~50 сообщений и сам предлагает секреты. Дубликаты не добавляются.</li>
-              <li>⚡ <b>Авто-детект</b> — после каждого ответа NPC парсит маркер <code>[REVEAL: текст]</code> и автоматически помечает секрет как раскрытый.</li>
+              <li>⚡ <b>Авто-детект</b> — после каждого ответа {{char}} парсит маркер <code>[REVEAL: текст]</code> и автоматически помечает секрет как раскрытый.</li>
               <li>Данные хранятся отдельно для каждого чата (chat metadata).</li>
             </ul>
           </div>
@@ -767,11 +781,11 @@ ${fmt(state.mutualSecrets)}
       if ($('#srt_drawer').hasClass('open')) renderDrawer();
     });
 
-    // After NPC replies — check for [REVEAL:...] markers
+    // After {{char}} replies — check for [REVEAL:...] markers
     eventSource.on(event_types.MESSAGE_RECEIVED, async (idx) => {
       const { chat } = ctx();
       const msg = chat?.[idx];
-      if (!msg || msg.is_user) return;  // только NPC
+      if (!msg || msg.is_user) return;  // только {{char}}
       await detectRevealInMessage(msg.mes || '');
       await renderWidget(); // refresh counts
     });
