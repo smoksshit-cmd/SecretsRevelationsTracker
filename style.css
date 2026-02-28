@@ -197,12 +197,13 @@
   flex-shrink: 0;
   background: rgba(255,255,255,0.06);
 }
+/* ── Drawer ─────────────────────────────────────────────────────────────────── */
+
 #srt_drawer {
   position: fixed;
   right: 0; top: 0;
   height: 100vh;
-  height: 100dvh; /* dynamic viewport — учитывает браузерную строку */
-  /* Отступ снизу под системную навигацию Android/iOS */
+  height: 100dvh;
   padding-bottom: env(safe-area-inset-bottom, 0px);
   max-height: calc(100dvh - env(safe-area-inset-bottom, 0px));
   width: min(440px, 94vw);
@@ -217,6 +218,9 @@
   color: #eee;
   font-family: Consolas, monospace;
   box-sizing: border-box;
+  /* Изоляция — drawer не влияет на layout ST */
+  isolation: isolate;
+  contain: layout style;
 }
 #srt_drawer.open { transform: translateX(0); }
 
