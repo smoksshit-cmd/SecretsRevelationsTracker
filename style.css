@@ -33,15 +33,18 @@
 /* ── Floating widget (FAB) ──────────────────────────────────────────────────── */
 #srt_fab {
   position: fixed;
-  /* right/bottom — только fallback, JS всегда ставит left+top в px */
-  right: auto; bottom: auto;
-  left: calc(100vw - 78px); top: 50%;
+  /* JS немедленно переписывает left+top в px.
+     CSS-fallback использует right вместо left чтобы не вызывать горизонтальный скролл —
+     100vw включает ширину скроллбара ST и выходит за границу viewport */
+  right: 14px;
+  top: 50%;
+  left: auto;
+  bottom: auto;
   z-index: 9990;
   display: none;
   user-select: none;
   touch-action: none;
   cursor: grab;
-  /* Не позволяем выйти за правый/нижний край даже без JS */
   max-width: 72px;
 }
 #srt_fab button {
@@ -199,64 +202,56 @@
 }
 /* ── Drawer ─────────────────────────────────────────────────────────────────── */
 
-/* Прозрачный оверлей под drawer — закрывает панель по клику вне неё */
 #srt_overlay {
   display: none;
-  position: fixed;
+  position: fixed !important;
   inset: 0;
   z-index: 9998;
   background: rgba(0, 0, 0, 0.35);
   cursor: default;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
-  pointer-events: auto;
-}
-@keyframes srt-overlay-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
 }
 
 #srt_drawer {
-  position: fixed;
-  right: 0; top: 0;
-  height: 100vh;
-  height: 100dvh;
+  position: fixed !important;
+  right: 0 !important;
+  top: 0 !important;
+  height: 100vh !important;
+  height: 100dvh !important;
   padding-bottom: env(safe-area-inset-bottom, 0px);
   max-height: calc(100dvh - env(safe-area-inset-bottom, 0px));
   width: min(440px, 94vw);
-  z-index: 10000;
+  z-index: 10000 !important;
 
-  /* Скрываем тремя методами — один из них точно сработает даже если ST переопределяет transform */
-  transform: translateX(110%);
-  visibility: hidden;
-  pointer-events: none;
+  /* Прячем тремя способами с !important — переопределяет любую ST-тему */
+  transform: translateX(110%) !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 
   transition: transform 150ms ease-in-out, visibility 0s linear 150ms;
   background: linear-gradient(135deg,#0d0d0d 0%,#1a1a2e 100%);
   border-left: 1px solid rgba(231,76,60,0.35);
   box-shadow: -20px 0 40px rgba(0,0,0,0.35);
-  display: flex;
+  display: flex !important;
   flex-direction: column;
   color: #eee;
   font-family: Consolas, monospace;
   box-sizing: border-box;
 }
 
-/* Открытое состояние */
-#srt_drawer.open {
-  transform: translateX(0);
-  visibility: visible;
-  pointer-events: auto;
+/* Используем srt-open вместо open — избегаем конфликта с ST классом open */
+#srt_drawer.srt-open {
+  transform: translateX(0) !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
   transition: transform 150ms ease-in-out, visibility 0s linear 0s;
 }
 
-/* Кнопки закрытия всегда кликабельны */
 #srt_drawer #srt_close,
 #srt_drawer #srt_close2 {
   pointer-events: auto !important;
   cursor: pointer !important;
-  position: relative;
-  z-index: 1;
 }
 
 #srt_drawer header {
