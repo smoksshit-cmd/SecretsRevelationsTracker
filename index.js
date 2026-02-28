@@ -1,25 +1,28 @@
 /**
  * Secrets & Revelations Tracker (SillyTavern Extension)
- * - Per-chat secrets storage (chatMetadata)
- * - Floating widget + side drawer editor
- * - Prompt injection using setExtensionPrompt() (no chat pollution)
+ * v0.5.0 — Auto-scan chat for secrets + live reveal detection
  *
- * Docs: https://docs.sillytavern.app/for-contributors/writing-extensions/
+ * New features:
+ *  - "Сканировать чат" — AI анализирует историю чата и предлагает секреты
+ *  - Авто-детект раскрытий — после каждого сообщения NPC проверяет, не открылась ли тайна
+ *  - Инжектированный промпт явно просит модель сигнализировать [REVEAL:...] при раскрытии
  */
 
 (() => {
   'use strict';
 
   const MODULE_KEY = 'secrets_revelations_tracker';
-  const CHAT_KEY = 'srt_state_v1';
+  const CHAT_KEY   = 'srt_state_v1';
   const PROMPT_TAG = 'SRT_SECRETS_TRACKER';
-
   const FAB_POS_KEY = 'srt_fab_pos_v1';
-  const FAB_MARGIN = 8; // px, keep widget reachable
+  const FAB_MARGIN  = 8;
+
+  // Regex: ловим [REVEAL: текст] или [РАСКРЫТИЕ: текст] в ответе модели
+  const REVEAL_RE = /\[(?:REVEAL|РАСКРЫТИЕ|REVEAL_SECRET):\s*([^\]]+)\]/gi;
+
   let lastFabDragTs = 0;
+  let scanInProgress = false;
 
-
-  // These enums are exported by ST core, but we keep local fallbacks to avoid brittle imports.
   const EXT_PROMPT_TYPES = Object.freeze({
     NONE: -1,
     IN_PROMPT: 0,
@@ -28,37 +31,32 @@
   });
 
   const TAGS = Object.freeze({
-    none: { label: '—', icon: '' },
-    dangerous: { label: '💣 Опасные', icon: '💣' },
-    personal: { label: '💔 Личные', icon: '💔' },
+    none:      { label: '—',            icon: '' },
+    dangerous: { label: '💣 Опасные',   icon: '💣' },
+    personal:  { label: '💔 Личные',    icon: '💔' },
     kompromat: { label: '🗡️ Компромат', icon: '🗡️' },
   });
 
   const defaultSettings = Object.freeze({
-    enabled: true,
-    showWidget: true,
-    collapsed: false,
-    // Where to place the injected tracker text:
-    position: EXT_PROMPT_TYPES.IN_PROMPT,
-    depth: 0,
+    enabled:      true,
+    showWidget:   true,
+    collapsed:    false,
+    autoDetect:   true,   // авто-детект раскрытий после каждого сообщения
+    position:     EXT_PROMPT_TYPES.IN_PROMPT,
+    depth:        0,
   });
 
-  function ctx() {
-    return SillyTavern.getContext();
-  }
+  // ─── helpers ────────────────────────────────────────────────────────────────
+
+  function ctx() { return SillyTavern.getContext(); }
 
   function getSettings() {
     const { extensionSettings, saveSettingsDebounced } = ctx();
-    if (!extensionSettings[MODULE_KEY]) {
+    if (!extensionSettings[MODULE_KEY])
       extensionSettings[MODULE_KEY] = structuredClone(defaultSettings);
-      saveSettingsDebounced();
-    }
-    // ensure new defaults exist after updates
-    for (const k of Object.keys(defaultSettings)) {
-      if (!Object.hasOwn(extensionSettings[MODULE_KEY], k)) {
+    for (const k of Object.keys(defaultSettings))
+      if (!Object.hasOwn(extensionSettings[MODULE_KEY], k))
         extensionSettings[MODULE_KEY][k] = defaultSettings[k];
-      }
-    }
     return extensionSettings[MODULE_KEY];
   }
 
@@ -66,114 +64,268 @@
     const { chatMetadata, saveMetadata } = ctx();
     if (!chatMetadata[CHAT_KEY]) {
       chatMetadata[CHAT_KEY] = {
-        npcLabel: '{{char}}',
-        npcSecrets: [],   // {id, text, tag, knownToUser}
-        userSecrets: [],  // {id, text, tag, knownToNpc}
-        mutualSecrets: [],// {id, text, tag}
+        npcLabel:      '{{char}}',
+        npcSecrets:    [],
+        userSecrets:   [],
+        mutualSecrets: [],
       };
       await saveMetadata();
     }
     return chatMetadata[CHAT_KEY];
   }
 
-  function makeId() {
-    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
-  }
+  function makeId()       { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`; }
+  function clamp(v,mn,mx){ return Math.max(mn, Math.min(mx, v)); }
+  function clamp01(v)    { return Math.max(0, Math.min(1, v)); }
 
   function escapeHtml(s) {
     return String(s)
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#039;');
+      .replaceAll('&','&amp;').replaceAll('<','&lt;')
+      .replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
   }
 
   function getActiveNpcNameForUi() {
     const c = ctx();
     try {
-      if (c.characterId !== undefined && c.characters?.[c.characterId]?.name) return c.characters[c.characterId].name;
-      if (c.groupId !== undefined && c.groups?.find?.(g => g.id === c.groupId)?.name) return c.groups.find(g => g.id === c.groupId).name;
+      if (c.characterId !== undefined && c.characters?.[c.characterId]?.name)
+        return c.characters[c.characterId].name;
+      if (c.groupId !== undefined)
+        return c.groups?.find?.(g => g.id === c.groupId)?.name ?? 'NPC';
     } catch {}
     return 'NPC';
   }
 
   function formatList(lines) {
-    if (!lines.length) return '[нет]';
-    return lines.map(x => `- ${x}`).join('\n');
+    return lines.length ? lines.map(x => `- ${x}`).join('\n') : '[нет]';
   }
 
   function leverageScore(items) {
-    // "Dirt" heuristic: kompromat & dangerous matter more, personal matters a bit.
-    return items.reduce((sum, it) => {
-      if (it.tag === 'kompromat') return sum + 2;
-      if (it.tag === 'dangerous') return sum + 2;
-      if (it.tag === 'personal') return sum + 1;
-      return sum + 0;
-    }, 0);
+    return items.reduce((s,it) => s + (it.tag === 'kompromat' || it.tag === 'dangerous' ? 2 : it.tag === 'personal' ? 1 : 0), 0);
   }
 
+  // ─── last N messages from chat ───────────────────────────────────────────────
+
+  function getRecentMessages(n = 40) {
+    const { chat } = ctx();
+    if (!Array.isArray(chat) || !chat.length) return '';
+    const slice = chat.slice(-n);
+    return slice.map(m => {
+      const who = m.is_user ? '{{user}}' : (m.name || 'NPC');
+      const msg = (m.mes || '').trim();
+      return `${who}: ${msg}`;
+    }).join('\n\n');
+  }
+
+  // ─── generateRaw wrapper (works across ST versions) ─────────────────────────
+
+  async function stGenerate(userPrompt, systemPrompt) {
+    const c = ctx();
+    // ST ≥ 1.11 exposes generateRaw
+    if (typeof c.generateRaw === 'function') {
+      try {
+        return await c.generateRaw(userPrompt, null, false, false, systemPrompt, true);
+      } catch (e) {
+        console.warn('[SRT] generateRaw failed, falling back', e);
+      }
+    }
+    // Fallback: use /api/backends/... — ST has no stable raw endpoint,
+    // so we proxy through the extension's context generate
+    if (typeof c.Generate === 'function') {
+      return await c.Generate('quiet');
+    }
+    throw new Error('No generate function available in SillyTavern context');
+  }
+
+  // ─── PROMPT BLOCK ────────────────────────────────────────────────────────────
+
   function buildPromptBlock(state) {
-    const npcKnownToUser = state.npcSecrets.filter(s => !!s.knownToUser);
-    const npcHiddenFromUser = state.npcSecrets.filter(s => !s.knownToUser);
-    const userKnownToNpc = state.userSecrets.filter(s => !!s.knownToNpc);
+    const npcKnownToUser   = state.npcSecrets.filter(s =>  s.knownToUser);
+    const npcHiddenFromUser= state.npcSecrets.filter(s => !s.knownToUser);
+    const userKnownToNpc   = state.userSecrets.filter(s =>  s.knownToNpc);
 
     const revealed = npcKnownToUser.length + state.userSecrets.length + state.mutualSecrets.length;
-    const hidden = npcHiddenFromUser.length;
+    const hidden   = npcHiddenFromUser.length;
 
-    const userKnowsNpcLines = npcKnownToUser.map(s => `${s.text} ${TAGS[s.tag]?.icon ?? ''}`.trim());
-    const npcKnowsUserLines = userKnownToNpc.map(s => `${s.text} ${TAGS[s.tag]?.icon ?? ''}`.trim());
-    const mutualLines = state.mutualSecrets.map(s => `${s.text} ${TAGS[s.tag]?.icon ?? ''}`.trim());
+    const fmt = arr => formatList(arr.map(s => `${s.text}${TAGS[s.tag]?.icon ? ' '+TAGS[s.tag].icon : ''}`));
 
-    const npcLeverage = leverageScore(userKnownToNpc);
+    const npcLeverage  = leverageScore(userKnownToNpc);
     const userLeverage = leverageScore(npcKnownToUser);
+    const balance = npcLeverage > userLeverage ? 'NPC' : userLeverage > npcLeverage ? '{{user}}' : 'Равный';
 
-    let balance = 'Равный';
-    if (npcLeverage > userLeverage) balance = 'NPC';
-    if (userLeverage > npcLeverage) balance = '{{user}}';
+    return `[ТРЕКЕР СЕКРЕТОВ И РАСКРЫТИЙ]
 
-    return [
-`[ТРЕКЕР СЕКРЕТОВ И РАСКРЫТИЙ]
+Отслеживай секреты, скрытую информацию и раскрытия между {{user}} и NPC.
 
-Отслеживай секреты, скрытую информацию и открытия между {{user}} и NPC. Обновляй, когда тайны раскрываются, обнаруживаются или используются.
+<КАТЕГОРИИ>
+🔓 Раскрыто (известно {{user}})  🔒 Скрыто  💣 Опасные  💔 Личные  🗡️ Компромат
+</КАТЕГОРИИ>
 
-<КАТЕГОРИИ СЕКРЕТОВ>
-- 🔓 Раскрытые (известно {{user}})
-- 🔒 Скрытые (неизвестно {{user}})
-- 💣 Опасные (может привести к серьёзным последствиям)
-- 💔 Личные (эмоциональные/уязвимые тайны)
-- 🗡️ Компромат (можно использовать как рычаг давления)
-</КАТЕГОРИИ СЕКРЕТОВ>
+<СОСТОЯНИЕ>
+Всего: ${hidden} скрытых / ${revealed} известных {{user}}
 
-<ОТСЛЕЖИВАНИЕ>
-- Всего секретов: [${hidden} скрытых / ${revealed} известных {{user}}]
-- Секреты {{user}}, известные NPC:
-${formatList(npcKnowsUserLines)}
-- Секреты NPC, известные {{user}}:
-${formatList(userKnowsNpcLines)}
-- Общие секреты (знают оба):
-${formatList(mutualLines)}
-- Баланс компромата: [${balance}]
-</ОТСЛЕЖИВАНИЕ>
-`
-    ].join('\n');
+Секреты {{user}}, известные NPC:
+${fmt(userKnownToNpc)}
+
+Секреты NPC, известные {{user}}:
+${fmt(npcKnownToUser)}
+
+Общие секреты:
+${fmt(state.mutualSecrets)}
+
+Баланс компромата: [${balance}]
+</СОСТОЯНИЕ>
+
+<ИНСТРУКЦИЯ ДЛЯ МОДЕЛИ>
+Если в ходе RP секрет раскрывается или становится известен другой стороне — ОБЯЗАТЕЛЬНО добавь в конец своего ответа маркер:
+[REVEAL: краткое описание раскрытого секрета]
+Это нужно для автоматического обновления трекера. Маркер должен быть на отдельной строке.
+</ИНСТРУКЦИЯ ДЛЯ МОДЕЛИ>
+`;
   }
 
   async function updateInjectedPrompt() {
-    const settings = getSettings();
+    const s = getSettings();
     const { setExtensionPrompt } = ctx();
-    if (!settings.enabled) {
+    if (!s.enabled) {
       setExtensionPrompt(PROMPT_TAG, '', EXT_PROMPT_TYPES.IN_PROMPT, 0, true);
       return;
     }
     const state = await getChatState();
-    const block = buildPromptBlock(state);
-    setExtensionPrompt(PROMPT_TAG, block, settings.position, settings.depth, true);
-    // keep widget UI updated too
+    setExtensionPrompt(PROMPT_TAG, buildPromptBlock(state), s.position, s.depth, true);
     await renderWidget();
   }
 
-  // ---------------- UI (widget + drawer) ----------------
+  // ─── AUTO-SCAN: extract secrets from chat history ───────────────────────────
+
+  async function scanChatForSecrets() {
+    if (scanInProgress) return toastr.warning('[SRT] Сканирование уже идёт…');
+    const history = getRecentMessages(50);
+    if (!history) return toastr.warning('[SRT] История чата пуста');
+
+    scanInProgress = true;
+    const $btn = $('#srt_scan_btn');
+    $btn.prop('disabled', true).text('⏳ Анализ…');
+
+    try {
+      const system = `Ты аналитик RP-диалогов. Твоя задача — извлечь секреты, тайны и скрытую информацию из диалога.
+Верни ТОЛЬКО валидный JSON и ничего больше. Без преамбулы, без markdown-блоков.
+Формат:
+{
+  "npcSecrets": [
+    {"text": "описание секрета NPC", "tag": "none|dangerous|personal|kompromat", "knownToUser": true|false}
+  ],
+  "userSecrets": [
+    {"text": "описание секрета {{user}}", "tag": "none|dangerous|personal|kompromat", "knownToNpc": true|false}
+  ],
+  "mutualSecrets": [
+    {"text": "описание общего секрета", "tag": "none|dangerous|personal|kompromat"}
+  ]
+}
+Правила:
+- knownToUser/knownToNpc = true если в диалоге явно видно, что персонаж об этом узнал
+- tag: dangerous — может навредить, personal — эмоциональный/личный, kompromat — рычаг давления
+- Если ничего не найдено — верни пустые массивы
+- НЕ добавляй секреты, которых нет в тексте`;
+
+      const user = `Вот последние сообщения RP-чата:\n\n${history}\n\nИзвлеки все секреты, тайны и скрытую информацию.`;
+
+      const raw = await stGenerate(user, system);
+      if (!raw) throw new Error('Пустой ответ от модели');
+
+      // Strip markdown fences if model added them
+      const clean = raw.replace(/```json|```/gi, '').trim();
+      const parsed = JSON.parse(clean);
+
+      const state = await getChatState();
+      const { saveMetadata } = ctx();
+
+      let added = 0;
+
+      // Merge — avoid exact-text duplicates
+      const existingTexts = new Set([
+        ...state.npcSecrets.map(s => s.text.toLowerCase()),
+        ...state.userSecrets.map(s => s.text.toLowerCase()),
+        ...state.mutualSecrets.map(s => s.text.toLowerCase()),
+      ]);
+
+      for (const it of (parsed.npcSecrets || [])) {
+        if (!it.text || existingTexts.has(it.text.toLowerCase())) continue;
+        state.npcSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none', knownToUser: !!it.knownToUser });
+        existingTexts.add(it.text.toLowerCase());
+        added++;
+      }
+      for (const it of (parsed.userSecrets || [])) {
+        if (!it.text || existingTexts.has(it.text.toLowerCase())) continue;
+        state.userSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none', knownToNpc: !!it.knownToNpc });
+        existingTexts.add(it.text.toLowerCase());
+        added++;
+      }
+      for (const it of (parsed.mutualSecrets || [])) {
+        if (!it.text || existingTexts.has(it.text.toLowerCase())) continue;
+        state.mutualSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none' });
+        existingTexts.add(it.text.toLowerCase());
+        added++;
+      }
+
+      await saveMetadata();
+      await updateInjectedPrompt();
+      await renderDrawer();
+
+      toastr.success(`[SRT] Найдено и добавлено секретов: ${added}`);
+    } catch (e) {
+      console.error('[SRT] scan failed', e);
+      toastr.error(`[SRT] Ошибка анализа: ${e.message}`);
+    } finally {
+      scanInProgress = false;
+      $btn.prop('disabled', false).text('🔍 Сканировать чат');
+    }
+  }
+
+  // ─── AUTO-DETECT reveals in new messages ────────────────────────────────────
+
+  async function detectRevealInMessage(messageText) {
+    if (!messageText) return;
+    const settings = getSettings();
+    if (!settings.autoDetect) return;
+
+    const matches = [...messageText.matchAll(REVEAL_RE)];
+    if (!matches.length) return;
+
+    const state = await getChatState();
+    const { saveMetadata } = ctx();
+    let changed = false;
+
+    for (const m of matches) {
+      const revealedText = m[1].trim();
+      if (!revealedText) continue;
+
+      // Try to match to an existing hidden NPC secret
+      const candidate = state.npcSecrets.find(s =>
+        !s.knownToUser &&
+        (s.text.toLowerCase().includes(revealedText.toLowerCase()) ||
+         revealedText.toLowerCase().includes(s.text.toLowerCase().slice(0, 20)))
+      );
+
+      if (candidate) {
+        candidate.knownToUser = true;
+        changed = true;
+        toastr.info(`🔓 Секрет раскрыт: «${candidate.text}»`, 'SRT Авто-детект', { timeOut: 5000 });
+      } else {
+        // New secret revealed — add to npcSecrets as known
+        state.npcSecrets.unshift({ id: makeId(), text: revealedText, tag: 'none', knownToUser: true });
+        changed = true;
+        toastr.info(`🔓 Новый раскрытый секрет: «${revealedText}»`, 'SRT Авто-детект', { timeOut: 5000 });
+      }
+    }
+
+    if (changed) {
+      await saveMetadata();
+      await updateInjectedPrompt();
+      if ($('#srt_drawer').hasClass('open')) renderDrawer();
+    }
+  }
+
+  // ─── FAB widget ──────────────────────────────────────────────────────────────
 
   function ensureFab() {
     if ($('#srt_fab').length) return;
@@ -188,220 +340,119 @@ ${formatList(mutualLines)}
       </div>
     `);
     $('#srt_fab_btn').on('click', (ev) => {
-      if (Date.now() - lastFabDragTs < 350) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        return;
-      }
+      if (Date.now() - lastFabDragTs < 350) { ev.preventDefault(); ev.stopPropagation(); return; }
       openDrawer(true);
     });
     $('#srt_fab_hide').on('click', async () => {
       const s = getSettings();
-      const { saveSettingsDebounced } = ctx();
       s.showWidget = false;
-      saveSettingsDebounced();
+      ctx().saveSettingsDebounced();
       await renderWidget();
-      toastr.info('Виджет скрыт (можно включить обратно в настройках расширения)');
+      toastr.info('Виджет скрыт (можно включить в настройках расширения)');
     });
-
     initFabDrag();
     applyFabPosition();
-
   }
 
   function applyFabPosition() {
     const el = document.getElementById('srt_fab');
     if (!el) return;
-
-    // Do NOT keep CSS transforms on a draggable fixed widget.
-    // On mobile, transforms (e.g. translateY) cause the widget to "run away".
     el.style.transform = 'none';
-
-    // Ensure we use left/top positioning (easier for drag) instead of right/bottom.
-    const rect = el.getBoundingClientRect();
-    if (!el.style.left && !el.style.top) {
-      el.style.left = Math.max(FAB_MARGIN, Math.min(window.innerWidth - rect.width - FAB_MARGIN, rect.left)) + 'px';
-      el.style.top = Math.max(FAB_MARGIN, Math.min(window.innerHeight - rect.height - FAB_MARGIN, rect.top)) + 'px';
-      el.style.right = 'auto';
-      el.style.bottom = 'auto';
-      el.style.transform = 'none';
-    }
-
     try {
       const raw = localStorage.getItem(FAB_POS_KEY);
-      if (!raw) {
-        setFabDefaultPosition();
-        return;
-      }
+      if (!raw) { setFabDefaultPosition(); return; }
       const pos = JSON.parse(raw);
-      if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') {
-        setFabDefaultPosition();
-        return;
-      }
-
-      const w = window.innerWidth;
-      const h = window.innerHeight;
-
-      const width = rect.width || el.offsetWidth || 60;
-      const height = rect.height || el.offsetHeight || 60;
-
-      const left = Math.round(pos.x * (w - width));
-      const top = Math.round(pos.y * (h - height));
-
-      el.style.left = clamp(left, FAB_MARGIN, w - width - FAB_MARGIN) + 'px';
-      el.style.top = clamp(top, FAB_MARGIN, h - height - FAB_MARGIN) + 'px';
-      el.style.right = 'auto';
+      if (!pos || typeof pos.x !== 'number') { setFabDefaultPosition(); return; }
+      const rect = el.getBoundingClientRect();
+      const w = window.innerWidth, h = window.innerHeight;
+      const W = rect.width || 60, H = rect.height || 60;
+      el.style.left   = clamp(Math.round(pos.x * (w - W)), FAB_MARGIN, w - W - FAB_MARGIN) + 'px';
+      el.style.top    = clamp(Math.round(pos.y * (h - H)), FAB_MARGIN, h - H - FAB_MARGIN) + 'px';
+      el.style.right  = 'auto';
       el.style.bottom = 'auto';
-      el.style.transform = 'none';
-    } catch (e) {
-      setFabDefaultPosition();
-    }
+    } catch { setFabDefaultPosition(); }
   }
 
-  function saveFabPositionPx(leftPx, topPx) {
+  function saveFabPositionPx(left, top) {
     const el = document.getElementById('srt_fab');
     if (!el) return;
     const rect = el.getBoundingClientRect();
-
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-
-    const width = rect.width || el.offsetWidth || 60;
-    const height = rect.height || el.offsetHeight || 60;
-
-    const x = (w - width) > 0 ? leftPx / (w - width) : 0;
-    const y = (h - height) > 0 ? topPx / (h - height) : 0;
-
-    const payload = { x: clamp01(x), y: clamp01(y) };
-    try {
-      localStorage.setItem(FAB_POS_KEY, JSON.stringify(payload));
-    } catch (e) {
-      // ignore
-    }
+    const w = window.innerWidth, h = window.innerHeight;
+    const W = rect.width || 60, H = rect.height || 60;
+    try { localStorage.setItem(FAB_POS_KEY, JSON.stringify({ x: clamp01(left / (w - W)), y: clamp01(top / (h - H)) })); } catch {}
   }
 
   function setFabDefaultPosition() {
     const el = document.getElementById('srt_fab');
     if (!el) return;
-
     const rect = el.getBoundingClientRect();
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const width = rect.width || el.offsetWidth || 60;
-    const height = rect.height || el.offsetHeight || 60;
-
-    // Default: dock to the right, vertically centered ("как сердечко")
-    const left = w - width - FAB_MARGIN;
-    const top = (h - height) / 2;
-
-    el.style.left = clamp(left, FAB_MARGIN, w - width - FAB_MARGIN) + 'px';
-    el.style.top = clamp(top, FAB_MARGIN, h - height - FAB_MARGIN) + 'px';
-    el.style.right = 'auto';
+    const W = rect.width || 60, H = rect.height || 60;
+    const left = window.innerWidth - W - FAB_MARGIN;
+    const top  = (window.innerHeight - H) / 2;
+    el.style.left   = clamp(left, FAB_MARGIN, window.innerWidth  - W - FAB_MARGIN) + 'px';
+    el.style.top    = clamp(top,  FAB_MARGIN, window.innerHeight - H - FAB_MARGIN) + 'px';
+    el.style.right  = 'auto';
     el.style.bottom = 'auto';
     el.style.transform = 'none';
-
-    saveFabPositionPx(parseInt(el.style.left || '0', 10) || 0, parseInt(el.style.top || '0', 10) || 0);
+    saveFabPositionPx(parseInt(el.style.left) || 0, parseInt(el.style.top) || 0);
   }
 
   function initFabDrag() {
-    const fab = document.getElementById('srt_fab');
+    const fab    = document.getElementById('srt_fab');
     const handle = document.getElementById('srt_fab_btn');
-    if (!fab || !handle) return;
-    if (fab.dataset.dragInit === '1') return;
+    if (!fab || !handle || fab.dataset.dragInit === '1') return;
     fab.dataset.dragInit = '1';
 
-    let startX = 0;
-    let startY = 0;
-    let startLeft = 0;
-    let startTop = 0;
-    let moved = false;
-    const MOVE_THRESHOLD = 6;
+    let sx, sy, sl, st, moved = false;
+    const THRESHOLD = 6;
 
-    const onPointerMove = (ev) => {
-      if (ev.pointerId === undefined) return;
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
-      if (!moved && (Math.abs(dx) + Math.abs(dy)) > MOVE_THRESHOLD) {
-        moved = true;
-        fab.classList.add('srt-dragging');
-      }
+    const onMove = (ev) => {
+      const dx = ev.clientX - sx, dy = ev.clientY - sy;
+      if (!moved && Math.abs(dx) + Math.abs(dy) > THRESHOLD) { moved = true; fab.classList.add('srt-dragging'); }
       if (!moved) return;
-
       const rect = fab.getBoundingClientRect();
-      const w = window.innerWidth;
-      const h = window.innerHeight;
-
-      const newLeft = clamp(startLeft + dx, FAB_MARGIN, w - rect.width - FAB_MARGIN);
-      const newTop = clamp(startTop + dy, FAB_MARGIN, h - rect.height - FAB_MARGIN);
-
-      fab.style.left = newLeft + 'px';
-      fab.style.top = newTop + 'px';
-      fab.style.right = 'auto';
-      fab.style.bottom = 'auto';
-
-      ev.preventDefault();
-      ev.stopPropagation();
+      const w = window.innerWidth, h = window.innerHeight;
+      fab.style.left   = clamp(sl + dx, FAB_MARGIN, w - rect.width  - FAB_MARGIN) + 'px';
+      fab.style.top    = clamp(st + dy, FAB_MARGIN, h - rect.height - FAB_MARGIN) + 'px';
+      fab.style.right  = 'auto'; fab.style.bottom = 'auto';
+      ev.preventDefault(); ev.stopPropagation();
     };
 
-    const endDrag = (ev) => {
-      try { handle.releasePointerCapture(ev.pointerId); } catch (_) {}
-      document.removeEventListener('pointermove', onPointerMove, { passive: false });
-      document.removeEventListener('pointerup', endDrag, { passive: true });
-      document.removeEventListener('pointercancel', endDrag, { passive: true });
-
-      if (moved) {
-        const left = parseInt(fab.style.left || '0', 10) || 0;
-        const top = parseInt(fab.style.top || '0', 10) || 0;
-        saveFabPositionPx(left, top);
-        lastFabDragTs = Date.now();
-      }
+    const onEnd = (ev) => {
+      try { handle.releasePointerCapture(ev.pointerId); } catch {}
+      document.removeEventListener('pointermove', onMove, { passive: false });
+      document.removeEventListener('pointerup',   onEnd,  { passive: true });
+      document.removeEventListener('pointercancel',onEnd, { passive: true });
+      if (moved) { saveFabPositionPx(parseInt(fab.style.left)||0, parseInt(fab.style.top)||0); lastFabDragTs = Date.now(); }
       moved = false;
       fab.classList.remove('srt-dragging');
     };
 
     handle.addEventListener('pointerdown', (ev) => {
-      // Only left button for mouse; touch is OK.
       if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-
-      // Make sure we have left/top for math.
       const rect = fab.getBoundingClientRect();
-      fab.style.left = Math.max(FAB_MARGIN, Math.min(window.innerWidth - rect.width - FAB_MARGIN, rect.left)) + 'px';
-      fab.style.top = Math.max(FAB_MARGIN, Math.min(window.innerHeight - rect.height - FAB_MARGIN, rect.top)) + 'px';
-      fab.style.right = 'auto';
-      fab.style.bottom = 'auto';
-      fab.style.transform = 'none';
-
-      startX = ev.clientX;
-      startY = ev.clientY;
-      startLeft = parseInt(fab.style.left || '0', 10) || 0;
-      startTop = parseInt(fab.style.top || '0', 10) || 0;
+      const w = window.innerWidth, h = window.innerHeight;
+      fab.style.left   = clamp(rect.left, FAB_MARGIN, w - rect.width  - FAB_MARGIN) + 'px';
+      fab.style.top    = clamp(rect.top,  FAB_MARGIN, h - rect.height - FAB_MARGIN) + 'px';
+      fab.style.right  = 'auto'; fab.style.bottom = 'auto'; fab.style.transform = 'none';
+      sx = ev.clientX; sy = ev.clientY;
+      sl = parseInt(fab.style.left)||0; st = parseInt(fab.style.top)||0;
       moved = false;
-
-      try { handle.setPointerCapture(ev.pointerId); } catch (_) {}
-
-      document.addEventListener('pointermove', onPointerMove, { passive: false });
-      document.addEventListener('pointerup', endDrag, { passive: true });
-      document.addEventListener('pointercancel', endDrag, { passive: true });
-
-      ev.preventDefault();
-      ev.stopPropagation();
+      try { handle.setPointerCapture(ev.pointerId); } catch {}
+      document.addEventListener('pointermove', onMove, { passive: false });
+      document.addEventListener('pointerup',   onEnd,  { passive: true });
+      document.addEventListener('pointercancel',onEnd, { passive: true });
+      ev.preventDefault(); ev.stopPropagation();
     }, { passive: false });
 
-    // Re-apply on resize/orientation change
     let resizeT = null;
-    window.addEventListener('resize', () => {
-      clearTimeout(resizeT);
-      resizeT = setTimeout(() => applyFabPosition(), 120);
-    });
+    window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(applyFabPosition, 120); });
   }
 
-  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-  function clamp01(v) { return Math.max(0, Math.min(1, v)); }
-
+  // ─── DRAWER ──────────────────────────────────────────────────────────────────
 
   function ensureDrawer() {
     if ($('#srt_drawer').length) return;
-
     $('body').append(`
       <aside id="srt_drawer" aria-hidden="true">
         <header>
@@ -411,10 +462,9 @@ ${formatList(mutualLines)}
           </div>
           <div class="sub" id="srt_subtitle"></div>
         </header>
-
         <div class="content" id="srt_content"></div>
-
         <div class="footer">
+          <button id="srt_scan_btn">🔍 Сканировать чат</button>
           <button id="srt_quick_prompt">Промпт</button>
           <button id="srt_quick_export">Экспорт</button>
           <button id="srt_quick_import">Импорт</button>
@@ -422,92 +472,84 @@ ${formatList(mutualLines)}
         </div>
       </aside>
     `);
-
     $('#srt_close, #srt_close2').on('click', () => openDrawer(false));
-    $('#srt_quick_prompt').on('click', () => showPromptPreview());
-    $('#srt_quick_export').on('click', () => exportJson());
-    $('#srt_quick_import').on('click', () => importJson());
+    $('#srt_quick_prompt').on('click', showPromptPreview);
+    $('#srt_quick_export').on('click', exportJson);
+    $('#srt_quick_import').on('click', importJson);
+    $('#srt_scan_btn').on('click', scanChatForSecrets);
   }
 
   function openDrawer(open) {
     ensureDrawer();
     const el = $('#srt_drawer');
-    if (open) {
-      el.addClass('open').attr('aria-hidden', 'false');
-      renderDrawer(); // fresh render every open
-    } else {
-      el.removeClass('open').attr('aria-hidden', 'true');
-    }
+    if (open) { el.addClass('open').attr('aria-hidden','false'); renderDrawer(); }
+    else       { el.removeClass('open').attr('aria-hidden','true'); }
   }
 
   async function renderWidget() {
     const settings = getSettings();
     ensureFab();
     applyFabPosition();
-    if (!settings.showWidget) {
-      $('#srt_fab').hide();
-      return;
-    }
-
+    if (!settings.showWidget) { $('#srt_fab').hide(); return; }
     const state = await getChatState();
-    const revealed = state.npcSecrets.filter(s => !!s.knownToUser).length + state.userSecrets.length + state.mutualSecrets.length;
-    const hidden = state.npcSecrets.filter(s => !s.knownToUser).length;
-
+    const revealed = state.npcSecrets.filter(s => s.knownToUser).length + state.userSecrets.length + state.mutualSecrets.length;
+    const hidden   = state.npcSecrets.filter(s => !s.knownToUser).length;
     $('#srt_fab_revealed').text(revealed);
     $('#srt_fab_hidden').text(hidden);
     $('#srt_fab').show();
   }
 
   function tagOptionsHtml(selected) {
-    return Object.keys(TAGS).map(k => {
-      const sel = k === selected ? 'selected' : '';
-      const t = TAGS[k];
-      return `<option value="${k}" ${sel}>${escapeHtml(t.label)}</option>`;
-    }).join('');
+    return Object.keys(TAGS).map(k =>
+      `<option value="${k}" ${k===selected?'selected':''}>${escapeHtml(TAGS[k].label)}</option>`
+    ).join('');
   }
 
   function renderItemRow(item, kind) {
-    // kind: 'npc' | 'user' | 'mutual'
-    const tagIcon = TAGS[item.tag]?.icon ?? '';
-    const toggle =
-      kind === 'npc'
-        ? `<label title="Известно {{user}}"><input type="checkbox" class="srt_toggle_known" data-kind="npc" data-id="${item.id}" ${item.knownToUser ? 'checked' : ''}></label>`
-        : kind === 'user'
-          ? `<label title="Известно NPC"><input type="checkbox" class="srt_toggle_known" data-kind="user" data-id="${item.id}" ${item.knownToNpc ? 'checked' : ''}></label>`
-          : '';
-
+    const icon = TAGS[item.tag]?.icon ?? '';
+    const toggle = kind === 'npc'
+      ? `<label title="Известно {{user}}"><input type="checkbox" class="srt_toggle_known" data-kind="npc"  data-id="${item.id}" ${item.knownToUser?'checked':''}> 🔓</label>`
+      : kind === 'user'
+      ? `<label title="Известно NPC"><input type="checkbox" class="srt_toggle_known" data-kind="user" data-id="${item.id}" ${item.knownToNpc?'checked':''}> 🔓</label>`
+      : '';
     return `
       <div class="item" data-kind="${kind}" data-id="${item.id}">
-        <div class="tag">${tagIcon}</div>
+        <div class="tag">${icon}</div>
         <div class="txt">${escapeHtml(item.text)}</div>
         ${toggle}
         <button class="srt_delete" data-kind="${kind}" data-id="${item.id}" title="Удалить">🗑️</button>
-      </div>
-    `;
+      </div>`;
   }
 
   async function renderDrawer() {
     ensureDrawer();
-    const state = await getChatState();
-
+    const state   = await getChatState();
     const npcName = getActiveNpcNameForUi();
-    $('#srt_subtitle').text(`Чат: ${npcName}  •  (данные сохраняются отдельно для каждого чата)`);
+    const settings = getSettings();
 
-    const revealed = state.npcSecrets.filter(s => !!s.knownToUser).length + state.userSecrets.length + state.mutualSecrets.length;
-    const hidden = state.npcSecrets.filter(s => !s.knownToUser).length;
+    $('#srt_subtitle').text(`Чат: ${npcName}  •  данные хранятся отдельно для каждого чата`);
+
+    const revealed = state.npcSecrets.filter(s => s.knownToUser).length + state.userSecrets.length + state.mutualSecrets.length;
+    const hidden   = state.npcSecrets.filter(s => !s.knownToUser).length;
 
     const html = `
       <div class="section">
         <div class="summary">
           <div class="pill">Раскрыто: <b class="g">${revealed}</b></div>
           <div class="pill">Скрыто: <b class="r">${hidden}</b></div>
+          <label class="srt-autodetect-toggle" title="Авто-детект раскрытий по маркерам [REVEAL:...]">
+            <input type="checkbox" id="srt_autodetect_cb" ${settings.autoDetect?'checked':''}> Авто-детект
+          </label>
+        </div>
+        <div class="srt-scan-hint">
+          Нажмите <b>🔍 Сканировать чат</b> — AI сам найдёт секреты в истории переписки.
         </div>
       </div>
 
       <div class="section">
-        <h4>📖 {{user}} знает о NPC</h4>
+        <h4>📖 Секреты NPC <small>(🔓 = известно {{user}})</small></h4>
         <div class="list">
-          ${state.npcSecrets.map(s => renderItemRow(s, 'npc')).join('') || '<div class="item"><div class="txt" style="opacity:.75">—</div></div>'}
+          ${state.npcSecrets.map(s => renderItemRow(s,'npc')).join('') || '<div class="item"><div class="txt muted">—</div></div>'}
         </div>
         <div class="addrow">
           <input type="text" id="srt_add_npc_text" placeholder="Новый секрет NPC…">
@@ -518,9 +560,9 @@ ${formatList(mutualLines)}
       </div>
 
       <div class="section">
-        <h4>👁️ NPC знает о {{user}}</h4>
+        <h4>👁️ Секреты {{user}} <small>(🔓 = известно NPC)</small></h4>
         <div class="list">
-          ${state.userSecrets.map(s => renderItemRow(s, 'user')).join('') || '<div class="item"><div class="txt" style="opacity:.75">—</div></div>'}
+          ${state.userSecrets.map(s => renderItemRow(s,'user')).join('') || '<div class="item"><div class="txt muted">—</div></div>'}
         </div>
         <div class="addrow">
           <input type="text" id="srt_add_user_text" placeholder="Новый секрет {{user}}…">
@@ -533,7 +575,7 @@ ${formatList(mutualLines)}
       <div class="section">
         <h4>🤝 Общие секреты</h4>
         <div class="list">
-          ${state.mutualSecrets.map(s => renderItemRow(s, 'mutual')).join('') || '<div class="item"><div class="txt" style="opacity:.75">—</div></div>'}
+          ${state.mutualSecrets.map(s => renderItemRow(s,'mutual')).join('') || '<div class="item"><div class="txt muted">—</div></div>'}
         </div>
         <div class="addrow">
           <input type="text" id="srt_add_mutual_text" placeholder="Новый общий секрет…">
@@ -545,24 +587,25 @@ ${formatList(mutualLines)}
 
     $('#srt_content').html(html);
 
-    // Wire handlers
-    $('#srt_add_npc_btn').on('click', () => addSecret('npc'));
-    $('#srt_add_user_btn').on('click', () => addSecret('user'));
+    $('#srt_add_npc_btn').on('click',    () => addSecret('npc'));
+    $('#srt_add_user_btn').on('click',   () => addSecret('user'));
     $('#srt_add_mutual_btn').on('click', () => addSecret('mutual'));
 
-    $('.srt_delete').on('click', (ev) => {
-      const id = $(ev.currentTarget).data('id');
-      const kind = $(ev.currentTarget).data('kind');
-      deleteSecret(kind, id);
+    $('.srt_delete').on('click', ev => {
+      deleteSecret($(ev.currentTarget).data('kind'), $(ev.currentTarget).data('id'));
+    });
+    $('.srt_toggle_known').on('input', ev => {
+      toggleKnown($(ev.currentTarget).data('kind'), $(ev.currentTarget).data('id'), $(ev.currentTarget).prop('checked'));
     });
 
-    $('.srt_toggle_known').on('input', (ev) => {
-      const id = $(ev.currentTarget).data('id');
-      const kind = $(ev.currentTarget).data('kind');
-      const checked = Boolean($(ev.currentTarget).prop('checked'));
-      toggleKnown(kind, id, checked);
+    $('#srt_autodetect_cb').on('input', ev => {
+      const s = getSettings();
+      s.autoDetect = $(ev.currentTarget).prop('checked');
+      ctx().saveSettingsDebounced();
     });
   }
+
+  // ─── CRUD ────────────────────────────────────────────────────────────────────
 
   async function addSecret(kind) {
     const state = await getChatState();
@@ -570,29 +613,18 @@ ${formatList(mutualLines)}
 
     if (kind === 'npc') {
       const text = String($('#srt_add_npc_text').val() ?? '').trim();
-      const tag = String($('#srt_add_npc_tag').val() ?? 'none');
-      const known = Boolean($('#srt_add_npc_known').prop('checked'));
       if (!text) return toastr.warning('Введите текст секрета');
-      state.npcSecrets.unshift({ id: makeId(), text, tag, knownToUser: known });
-      $('#srt_add_npc_text').val('');
-      $('#srt_add_npc_known').prop('checked', false);
-    }
-
-    if (kind === 'user') {
+      state.npcSecrets.unshift({ id: makeId(), text, tag: String($('#srt_add_npc_tag').val()||'none'), knownToUser: Boolean($('#srt_add_npc_known').prop('checked')) });
+      $('#srt_add_npc_text').val(''); $('#srt_add_npc_known').prop('checked', false);
+    } else if (kind === 'user') {
       const text = String($('#srt_add_user_text').val() ?? '').trim();
-      const tag = String($('#srt_add_user_tag').val() ?? 'none');
-      const known = Boolean($('#srt_add_user_known').prop('checked'));
       if (!text) return toastr.warning('Введите текст секрета');
-      state.userSecrets.unshift({ id: makeId(), text, tag, knownToNpc: known });
-      $('#srt_add_user_text').val('');
-      $('#srt_add_user_known').prop('checked', false);
-    }
-
-    if (kind === 'mutual') {
+      state.userSecrets.unshift({ id: makeId(), text, tag: String($('#srt_add_user_tag').val()||'none'), knownToNpc: Boolean($('#srt_add_user_known').prop('checked')) });
+      $('#srt_add_user_text').val(''); $('#srt_add_user_known').prop('checked', false);
+    } else {
       const text = String($('#srt_add_mutual_text').val() ?? '').trim();
-      const tag = String($('#srt_add_mutual_tag').val() ?? 'none');
       if (!text) return toastr.warning('Введите текст секрета');
-      state.mutualSecrets.unshift({ id: makeId(), text, tag });
+      state.mutualSecrets.unshift({ id: makeId(), text, tag: String($('#srt_add_mutual_tag').val()||'none') });
       $('#srt_add_mutual_text').val('');
     }
 
@@ -603,207 +635,153 @@ ${formatList(mutualLines)}
 
   async function deleteSecret(kind, id) {
     const state = await getChatState();
-    const { saveMetadata } = ctx();
-
-    const list =
-      kind === 'npc' ? state.npcSecrets :
-      kind === 'user' ? state.userSecrets :
-      state.mutualSecrets;
-
+    const list = kind === 'npc' ? state.npcSecrets : kind === 'user' ? state.userSecrets : state.mutualSecrets;
     const idx = list.findIndex(x => x.id === id);
     if (idx >= 0) list.splice(idx, 1);
-
-    await saveMetadata();
+    await ctx().saveMetadata();
     await updateInjectedPrompt();
     await renderDrawer();
   }
 
   async function toggleKnown(kind, id, value) {
     const state = await getChatState();
-    const { saveMetadata } = ctx();
-
-    if (kind === 'npc') {
-      const it = state.npcSecrets.find(x => x.id === id);
-      if (it) it.knownToUser = value;
-    }
-    if (kind === 'user') {
-      const it = state.userSecrets.find(x => x.id === id);
-      if (it) it.knownToNpc = value;
-    }
-
-    await saveMetadata();
+    if (kind === 'npc') { const it = state.npcSecrets.find(x => x.id === id); if (it) it.knownToUser = value; }
+    if (kind === 'user') { const it = state.userSecrets.find(x => x.id === id); if (it) it.knownToNpc = value; }
+    await ctx().saveMetadata();
     await updateInjectedPrompt();
-    // no full re-render needed; widget+prompt updated.
   }
+
+  // ─── Import / Export / Prompt preview ───────────────────────────────────────
 
   async function exportJson() {
     const state = await getChatState();
-    const data = JSON.stringify(state, null, 2);
-    await ctx().Popup.show.text('Экспорт SRT (скопируйте JSON)', `<pre style="white-space:pre-wrap">${escapeHtml(data)}</pre>`);
+    await ctx().Popup.show.text('Экспорт SRT', `<pre style="white-space:pre-wrap">${escapeHtml(JSON.stringify(state,null,2))}</pre>`);
   }
 
   async function showPromptPreview() {
     const state = await getChatState();
-    const block = buildPromptBlock(state);
-    await ctx().Popup.show.text('Что отправляется в промпт (SRT)', `<pre style="white-space:pre-wrap;max-height:60vh;overflow:auto">${escapeHtml(block)}</pre>`);
+    await ctx().Popup.show.text('Промпт SRT', `<pre style="white-space:pre-wrap;max-height:60vh;overflow:auto">${escapeHtml(buildPromptBlock(state))}</pre>`);
   }
 
   async function importJson() {
     const { Popup, saveMetadata, chatMetadata } = ctx();
-    const raw = await Popup.show.input('Импорт SRT', 'Вставьте ранее экспортированный JSON:', '');
+    const raw = await Popup.show.input('Импорт SRT', 'Вставьте JSON:', '');
     if (!raw) return;
     try {
-      const parsed = JSON.parse(raw);
-      // minimal validation
-      if (!parsed || typeof parsed !== 'object') throw new Error('Not an object');
-      parsed.npcSecrets = Array.isArray(parsed.npcSecrets) ? parsed.npcSecrets : [];
-      parsed.userSecrets = Array.isArray(parsed.userSecrets) ? parsed.userSecrets : [];
-      parsed.mutualSecrets = Array.isArray(parsed.mutualSecrets) ? parsed.mutualSecrets : [];
-      parsed.npcLabel = typeof parsed.npcLabel === 'string' ? parsed.npcLabel : '{{char}}';
-      chatMetadata[CHAT_KEY] = parsed;
+      const p = JSON.parse(raw);
+      if (!p || typeof p !== 'object') throw new Error('Not an object');
+      p.npcSecrets    = Array.isArray(p.npcSecrets)    ? p.npcSecrets    : [];
+      p.userSecrets   = Array.isArray(p.userSecrets)   ? p.userSecrets   : [];
+      p.mutualSecrets = Array.isArray(p.mutualSecrets) ? p.mutualSecrets : [];
+      p.npcLabel      = typeof p.npcLabel === 'string' ? p.npcLabel      : '{{char}}';
+      chatMetadata[CHAT_KEY] = p;
       await saveMetadata();
       await updateInjectedPrompt();
       toastr.success('Импортировано');
       renderDrawer();
-    } catch (e) {
-      console.error('[SRT] import failed', e);
-      toastr.error('Неверный JSON');
-    }
+    } catch (e) { console.error('[SRT] import failed', e); toastr.error('Неверный JSON'); }
   }
 
-  // ---------------- Settings UI (Extensions panel) ----------------
+  // ─── Settings panel ──────────────────────────────────────────────────────────
 
   async function mountSettingsUi() {
-    const html = `
+    if ($('#srt_enabled').length) return;
+    const target = $('#extensions_settings2').length ? '#extensions_settings2' : '#extensions_settings';
+    if (!$(target).length) { console.warn('[SRT] settings container not found'); return; }
+
+    const s = getSettings();
+    $(target).append(`
       <div class="srt-settings-block" id="srt_settings_block">
         <div class="srt-title">
           <span>🔐 Трекер секретов и раскрытий</span>
-          <button type="button" id="srt_collapse_btn" title="Свернуть/развернуть">▾</button>
+          <button type="button" id="srt_collapse_btn">▾</button>
         </div>
-
         <div class="srt-body">
           <div class="srt-row">
-            <label class="checkbox_label">
-              <input type="checkbox" id="srt_enabled">
-              <span>Включить инъекцию в промпт</span>
-            </label>
+            <label class="checkbox_label"><input type="checkbox" id="srt_enabled" ${s.enabled?'checked':''}><span>Включить инъекцию в промпт</span></label>
           </div>
-
           <div class="srt-row">
-            <label class="checkbox_label">
-              <input type="checkbox" id="srt_show_widget">
-              <span>Показывать плавающий виджет (🔐)</span>
-            </label>
+            <label class="checkbox_label"><input type="checkbox" id="srt_show_widget" ${s.showWidget?'checked':''}><span>Показывать плавающий виджет 🔐</span></label>
           </div>
-
+          <div class="srt-row">
+            <label class="checkbox_label"><input type="checkbox" id="srt_autodetect" ${s.autoDetect?'checked':''}><span>Авто-детект раскрытий по маркеру [REVEAL:...]</span></label>
+          </div>
           <div class="srt-row srt-row-slim">
             <button class="menu_button" id="srt_open_drawer">Открыть трекер</button>
+            <button class="menu_button" id="srt_scan_settings_btn">🔍 Сканировать чат</button>
             <button class="menu_button" id="srt_prompt_preview">Показать промпт</button>
-            <button class="menu_button" id="srt_export_json">Экспорт JSON</button>
-            <button class="menu_button" id="srt_import_json">Импорт JSON</button>
-            <button class="menu_button" id="srt_reset_widget_pos">Сбросить позицию значка</button>
+            <button class="menu_button" id="srt_export_json">Экспорт</button>
+            <button class="menu_button" id="srt_import_json">Импорт</button>
+            <button class="menu_button" id="srt_reset_widget_pos">Сбросить позицию виджета</button>
           </div>
-
           <div class="srt-hint">
-            Подсказки:
+            <b>Как работает авто-режим:</b>
             <ul>
-              <li>Секреты сохраняются <b>отдельно для каждого чата</b> (chat metadata).</li>
-              <li>Инъекция использует <code>setExtensionPrompt()</code>, поэтому в чат-лог ничего не добавляется.</li>
-              <li>Виджет (🔐) можно быстро скрыть крестиком прямо на нём.</li>
-              <li>Кнопка «Показать промпт» работает и на телефоне — удобно для проверки без F12.</li>
+              <li>🔍 <b>Сканировать чат</b> — AI анализирует последние ~50 сообщений и сам предлагает секреты. Дубликаты не добавляются.</li>
+              <li>⚡ <b>Авто-детект</b> — после каждого ответа NPC парсит маркер <code>[REVEAL: текст]</code> и автоматически помечает секрет как раскрытый.</li>
+              <li>Данные хранятся отдельно для каждого чата (chat metadata).</li>
             </ul>
           </div>
         </div>
       </div>
-    `;
+    `);
 
-    const target = $('#extensions_settings2').length ? '#extensions_settings2' : '#extensions_settings';
-    if (!$(target).length) {
-      console.warn('[SRT] settings container not found');
-      return;
-    }
-
-    // Avoid duplicates if ST hot-reloads extensions
-    if ($('#srt_enabled').length) return;
-
-    $(target).append(html);
-
-    // Init values
-    const s = getSettings();
-    $('#srt_enabled').prop('checked', !!s.enabled);
-    $('#srt_show_widget').prop('checked', !!s.showWidget);
-
-    // collapsed state
-    if (s.collapsed) {
-      $('#srt_settings_block').addClass('srt-collapsed');
-      $('#srt_collapse_btn').text('▸');
-    }
+    if (s.collapsed) { $('#srt_settings_block').addClass('srt-collapsed'); $('#srt_collapse_btn').text('▸'); }
 
     $('#srt_collapse_btn').on('click', () => {
-      const { saveSettingsDebounced } = ctx();
-      const block = $('#srt_settings_block');
-      const nowCollapsed = !block.hasClass('srt-collapsed');
-      block.toggleClass('srt-collapsed', nowCollapsed);
-      $('#srt_collapse_btn').text(nowCollapsed ? '▸' : '▾');
-      s.collapsed = nowCollapsed;
-      saveSettingsDebounced();
+      const now = !$('#srt_settings_block').hasClass('srt-collapsed');
+      $('#srt_settings_block').toggleClass('srt-collapsed', now);
+      $('#srt_collapse_btn').text(now ? '▸' : '▾');
+      s.collapsed = now; ctx().saveSettingsDebounced();
     });
 
-    // Handlers
-    $('#srt_enabled').on('input', async (ev) => {
-      const { saveSettingsDebounced } = ctx();
-      s.enabled = Boolean($(ev.currentTarget).prop('checked'));
-      saveSettingsDebounced();
-      await updateInjectedPrompt();
-    });
-
-    $('#srt_show_widget').on('input', async (ev) => {
-      const { saveSettingsDebounced } = ctx();
-      s.showWidget = Boolean($(ev.currentTarget).prop('checked'));
-      saveSettingsDebounced();
-      await renderWidget();
-    });
+    $('#srt_enabled').on('input', async ev => { s.enabled = $(ev.currentTarget).prop('checked'); ctx().saveSettingsDebounced(); await updateInjectedPrompt(); });
+    $('#srt_show_widget').on('input', async ev => { s.showWidget = $(ev.currentTarget).prop('checked'); ctx().saveSettingsDebounced(); await renderWidget(); });
+    $('#srt_autodetect').on('input', ev => { s.autoDetect = $(ev.currentTarget).prop('checked'); ctx().saveSettingsDebounced(); });
 
     $('#srt_open_drawer').on('click', () => openDrawer(true));
-    $('#srt_prompt_preview').on('click', () => showPromptPreview());
-    $('#srt_export_json').on('click', () => exportJson());
-    $('#srt_import_json').on('click', () => importJson());
-
+    $('#srt_scan_settings_btn').on('click', scanChatForSecrets);
+    $('#srt_prompt_preview').on('click', showPromptPreview);
+    $('#srt_export_json').on('click', exportJson);
+    $('#srt_import_json').on('click', importJson);
     $('#srt_reset_widget_pos').on('click', () => {
-      try { localStorage.removeItem(FAB_POS_KEY); } catch (_) {}
+      try { localStorage.removeItem(FAB_POS_KEY); } catch {}
       setFabDefaultPosition();
-      toastr.success('Позиция значка сброшена');
+      toastr.success('Позиция сброшена');
     });
-
   }
+
+  // ─── Event wiring ────────────────────────────────────────────────────────────
 
   function wireChatEvents() {
     const { eventSource, event_types } = ctx();
 
     eventSource.on(event_types.APP_READY, async () => {
-      ensureFab();
-    applyFabPosition();
-      ensureDrawer();
+      ensureFab(); applyFabPosition(); ensureDrawer();
       await mountSettingsUi();
       await updateInjectedPrompt();
     });
 
     eventSource.on(event_types.CHAT_CHANGED, async () => {
-      // re-sync prompt + widget for the new chat
       await updateInjectedPrompt();
-      // if drawer is open, re-render it
       if ($('#srt_drawer').hasClass('open')) renderDrawer();
+    });
+
+    // After NPC replies — check for [REVEAL:...] markers
+    eventSource.on(event_types.MESSAGE_RECEIVED, async (idx) => {
+      const { chat } = ctx();
+      const msg = chat?.[idx];
+      if (!msg || msg.is_user) return;  // только NPC
+      await detectRevealInMessage(msg.mes || '');
+      await renderWidget(); // refresh counts
     });
   }
 
-  // ---------------- Boot ----------------
+  // ─── Boot ────────────────────────────────────────────────────────────────────
+
   jQuery(() => {
-    try {
-      wireChatEvents();
-      console.log('[SRT] loaded');
-    } catch (e) {
-      console.error('[SRT] failed to init', e);
-    }
+    try { wireChatEvents(); console.log('[SRT] v0.5.0 loaded'); }
+    catch (e) { console.error('[SRT] init failed', e); }
   });
 
 })();

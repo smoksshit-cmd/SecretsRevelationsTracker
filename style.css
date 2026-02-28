@@ -1,4 +1,6 @@
-/* Secrets & Revelations Tracker */
+/* Secrets & Revelations Tracker — v0.5.0 */
+
+/* ── Settings panel ─────────────────────────────────────────────────────────── */
 .srt-settings-block {
   border: 1px solid var(--SmartThemeBorderColor);
   border-radius: 10px;
@@ -28,7 +30,7 @@
 .srt-hint { opacity: 0.9; font-size: 0.9em; margin-top: 8px; }
 .srt-hint ul { margin: 6px 0 0 18px; }
 
-/* Floating widget */
+/* ── Floating widget (FAB) ──────────────────────────────────────────────────── */
 #srt_fab {
   position: fixed;
   right: 14px;
@@ -40,7 +42,7 @@
   cursor: grab;
 }
 #srt_fab button {
-  border: 1px solid rgba(231, 76, 60, 0.55);
+  border: 1px solid rgba(231,76,60,0.55);
   background: linear-gradient(135deg,#0d0d0d 0%,#1a1a2e 100%);
   color: #eee;
   border-radius: 999px;
@@ -48,88 +50,51 @@
   font-family: Consolas, monospace;
   font-size: 12px;
   cursor: pointer;
-  box-shadow: 0 0 15px rgba(231, 76, 60, 0.2);
+  box-shadow: 0 0 15px rgba(231,76,60,0.2);
 }
+#srt_fab.srt-dragging { cursor: grabbing; opacity: 0.92; }
+#srt_fab.srt-dragging #srt_fab_btn { cursor: grabbing; }
 
-/* Mobile-first: vertical quick access like the "heart" widgets */
-@media (max-width: 768px) {
-  #srt_fab {
-    right: 6px;
-    top: 50%;
-    bottom: auto;
-    /* IMPORTANT: don't use transforms on a draggable fixed element.
-       Transforms break drag math on mobile ("убегает").
-       Default positioning is handled in JS. */
-    transform: none;
-  }
-  #srt_fab #srt_fab_btn {
-    touch-action: none;
-    user-select: none;
-    width: 56px;
-    height: 56px;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 2px;
-    font-size: 18px;
-  }
-  #srt_fab .srt-mini {
-    font-size: 10px;
-    line-height: 10px;
-    letter-spacing: 0.2px;
-  }
-  #srt_fab #srt_fab_hide {
-    touch-action: none;
-    user-select: none;
-    right: -4px;
-    top: -6px;
-    width: 20px;
-    height: 20px;
-    font-size: 11px;
-    line-height: 18px;
-  }
-}
-
-/* While dragging */
-#srt_fab.srt-dragging { cursor: grabbing; }
 #srt_fab #srt_fab_hide {
-    touch-action: none;
-    user-select: none;
+  touch-action: none;
+  user-select: none;
   position: absolute;
-  right: -6px;
-  top: -8px;
-  width: 22px;
-  height: 22px;
+  right: -6px; top: -8px;
+  width: 22px; height: 22px;
   padding: 0;
   border-radius: 999px;
-  border: 1px solid rgba(231, 76, 60, 0.45);
+  border: 1px solid rgba(231,76,60,0.45);
   background: rgba(0,0,0,0.55);
   font-size: 12px;
   line-height: 20px;
 }
-#srt_fab .srt-count {
-  color: #2ecc71;
-  font-weight: 800;
-}
-#srt_fab .srt-count-hidden {
-  color: #e74c3c;
-  font-weight: 800;
+#srt_fab .srt-count        { color: #2ecc71; font-weight: 800; }
+#srt_fab .srt-count-hidden { color: #e74c3c; font-weight: 800; }
+
+@media (max-width: 768px) {
+  #srt_fab { right: 6px; top: 50%; bottom: auto; transform: none; }
+  #srt_fab #srt_fab_btn {
+    touch-action: none; user-select: none;
+    width: 56px; height: 56px; padding: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 2px; font-size: 18px;
+  }
+  #srt_fab .srt-mini { font-size: 10px; line-height: 10px; letter-spacing: 0.2px; }
+  #srt_fab #srt_fab_hide { touch-action: none; user-select: none; right: -4px; top: -6px; width: 20px; height: 20px; font-size: 11px; line-height: 18px; }
 }
 
-/* Drawer */
+/* ── Drawer ─────────────────────────────────────────────────────────────────── */
 #srt_drawer {
   position: fixed;
-  right: 0;
-  top: 0;
+  right: 0; top: 0;
   height: 100vh;
-  width: min(420px, 92vw);
+  width: min(440px, 94vw);
   z-index: 10000;
   transform: translateX(100%);
   transition: transform 140ms ease-in-out;
   background: linear-gradient(135deg,#0d0d0d 0%,#1a1a2e 100%);
-  border-left: 1px solid rgba(231, 76, 60, 0.35);
+  border-left: 1px solid rgba(231,76,60,0.35);
   box-shadow: -20px 0 40px rgba(0,0,0,0.35);
   display: flex;
   flex-direction: column;
@@ -137,88 +102,52 @@
   font-family: Consolas, monospace;
 }
 #srt_drawer.open { transform: translateX(0); }
+
 #srt_drawer header {
   padding: 12px 12px 8px 12px;
-  border-bottom: 1px solid rgba(231, 76, 60, 0.25);
+  border-bottom: 1px solid rgba(231,76,60,0.25);
 }
-#srt_drawer header .topline {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  align-items: center;
-}
-#srt_drawer header .title {
-  font-weight: 800;
-  color: #e74c3c;
-  text-shadow: 0 0 10px rgba(231, 76, 60, 0.35);
-}
-#srt_drawer header .sub {
-  margin-top: 6px;
-  font-size: 11px;
-  opacity: 0.9;
-}
+#srt_drawer header .topline { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#srt_drawer header .title { font-weight: 800; color: #e74c3c; text-shadow: 0 0 10px rgba(231,76,60,0.35); }
+#srt_drawer header .sub { margin-top: 6px; font-size: 11px; opacity: 0.9; }
+
 #srt_drawer button {
-  border: 1px solid rgba(231, 76, 60, 0.35);
+  border: 1px solid rgba(231,76,60,0.35);
   background: rgba(255,255,255,0.06);
   color: #eee;
   border-radius: 10px;
   padding: 6px 10px;
   cursor: pointer;
   font-family: Consolas, monospace;
+  font-size: 12px;
 }
 #srt_drawer button:hover { background: rgba(255,255,255,0.10); }
 
 #srt_drawer .footer {
   padding: 10px 12px;
-  border-top: 1px solid rgba(231, 76, 60, 0.25);
+  border-top: 1px solid rgba(231,76,60,0.25);
   display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-#srt_drawer .item {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 6px 8px;
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 10px;
-  margin-bottom: 6px;
-  background: rgba(0,0,0,0.18);
-}
-#srt_drawer .item .tag { width: 16px; text-align: center; opacity: 0.95; }
-#srt_drawer .item .txt { flex: 1; font-size: 11px; line-height: 1.35; }
-#srt_drawer .item input[type="checkbox"] { transform: translateY(1px); }
-
-#srt_drawer .addrow {
-  margin-top: 8px;
-  display: grid;
-  grid-template-columns: 1fr auto;
   gap: 6px;
+  flex-wrap: wrap;
+  justify-content: space-between;
 }
-#srt_drawer .addrow input[type="text"] {
-  grid-column: 1 / -1;
-  border: 1px solid rgba(255,255,255,0.10);
-  background: rgba(255,255,255,0.06);
-  color: #eee;
-  border-radius: 10px;
-  padding: 8px 10px;
-  font-family: Consolas, monospace;
+#srt_drawer .footer button {
+  background: rgba(231,76,60,0.10);
+  border: 1px solid rgba(231,76,60,0.35);
 }
-#srt_drawer .addrow select {
-  border: 1px solid rgba(255,255,255,0.10);
-  background: rgba(255,255,255,0.06);
-  color: #eee;
-  border-radius: 10px;
-  padding: 6px 10px;
-  font-family: Consolas, monospace;
+/* Scan button highlight */
+#srt_drawer #srt_scan_btn {
+  background: rgba(46,204,113,0.12);
+  border: 1px solid rgba(46,204,113,0.40);
+  color: #2ecc71;
+  font-weight: 700;
 }
-#srt_drawer .addrow label { font-size: 11px; opacity: 0.95; }
-#srt_drawer .content {
-  padding: 12px;
-  overflow: auto;
-  flex: 1;
+#srt_drawer #srt_scan_btn:disabled {
+  opacity: 0.6; cursor: wait;
 }
+
+#srt_drawer .content { padding: 12px; overflow: auto; flex: 1; }
+
 #srt_drawer .section {
   background: rgba(255,255,255,0.04);
   border: 1px solid rgba(255,255,255,0.06);
@@ -226,31 +155,58 @@
   padding: 10px;
   margin-bottom: 10px;
 }
-#srt_drawer .section h4 {
-  margin: 0 0 8px 0;
-  font-size: 12px;
-}
+#srt_drawer .section h4 { margin: 0 0 8px 0; font-size: 12px; }
+#srt_drawer .section h4 small { opacity: 0.7; font-weight: 400; }
+
 #srt_drawer .summary {
   font-size: 11px;
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 8px;
 }
 #srt_drawer .pill { opacity: 0.95; }
 #srt_drawer .pill b { font-weight: 800; }
-#srt_drawer .pill .g { color: #2ecc71; }
-#srt_drawer .pill .r { color: #e74c3c; }
+#srt_drawer .g { color: #2ecc71; }
+#srt_drawer .r { color: #e74c3c; }
+
+/* Scan hint strip */
+#srt_drawer .srt-scan-hint {
+  font-size: 11px;
+  opacity: 0.75;
+  padding: 4px 6px;
+  background: rgba(46,204,113,0.07);
+  border: 1px solid rgba(46,204,113,0.18);
+  border-radius: 7px;
+}
+
+/* Autodetect toggle inside summary */
+.srt-autodetect-toggle {
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.9;
+  cursor: pointer;
+  margin-left: auto;
+}
+
 #srt_drawer .list { margin-top: 8px; }
+
 #srt_drawer .item {
   display: flex;
   gap: 8px;
   align-items: center;
   padding: 6px 6px;
   border-radius: 8px;
+  margin-bottom: 4px;
 }
 #srt_drawer .item:hover { background: rgba(255,255,255,0.03); }
-#srt_drawer .item .txt { flex: 1; font-size: 11px; line-height: 1.25; }
-#srt_drawer .item .tag { width: 20px; text-align: center; opacity: 0.95; }
+#srt_drawer .item .tag  { width: 20px; text-align: center; opacity: 0.95; }
+#srt_drawer .item .txt  { flex: 1; font-size: 11px; line-height: 1.25; }
+#srt_drawer .item .muted { opacity: 0.5; }
+#srt_drawer .item label  { font-size: 11px; opacity: 0.9; white-space: nowrap; cursor: pointer; }
 #srt_drawer .item button {
   background: transparent;
   border: 1px solid rgba(255,255,255,0.16);
@@ -260,13 +216,16 @@
   cursor: pointer;
   font-size: 11px;
 }
+
 #srt_drawer .addrow {
   display: flex;
   gap: 6px;
   margin-top: 8px;
   flex-wrap: wrap;
+  align-items: center;
 }
-#srt_drawer input[type="text"], #srt_drawer select {
+#srt_drawer input[type="text"],
+#srt_drawer select {
   background: rgba(255,255,255,0.06);
   border: 1px solid rgba(255,255,255,0.12);
   color: #eee;
@@ -275,26 +234,5 @@
   font-family: Consolas, monospace;
   font-size: 12px;
 }
-#srt_drawer input[type="text"] { flex: 1; min-width: 170px; }
-#srt_drawer .footer {
-  padding: 10px 12px;
-  border-top: 1px solid rgba(231, 76, 60, 0.25);
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-}
-#srt_drawer .footer button {
-  background: rgba(231, 76, 60, 0.10);
-  border: 1px solid rgba(231, 76, 60, 0.35);
-  color: #eee;
-  border-radius: 10px;
-  padding: 8px 10px;
-  cursor: pointer;
-  font-family: Consolas, monospace;
-}
-
-
-#srt_fab.srt-dragging { cursor: grabbing; opacity: 0.92; }
-#srt_fab.srt-dragging #srt_fab_btn {
-    touch-action: none;
-    user-select: none; cursor: grabbing; }
+#srt_drawer input[type="text"] { flex: 1; min-width: 160px; }
+#srt_drawer .addrow label { font-size: 11px; opacity: 0.9; cursor: pointer; }
