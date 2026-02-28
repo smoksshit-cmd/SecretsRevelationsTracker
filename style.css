@@ -82,6 +82,27 @@
   }
   #srt_fab .srt-mini { font-size: 10px; line-height: 10px; letter-spacing: 0.2px; }
   #srt_fab #srt_fab_hide { touch-action: none; user-select: none; right: -4px; top: -6px; width: 20px; height: 20px; font-size: 11px; line-height: 18px; }
+
+  /* На мобиле учитываем строку браузера сверху и навигацию снизу */
+  #srt_drawer {
+    top: env(safe-area-inset-top, 0px);
+    height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    /* Дополнительный запас под адресную строку и навигацию браузера */
+    margin-bottom: 0;
+  }
+
+  #srt_drawer .footer {
+    /* Кнопки не уходят под навигацию */
+    padding-bottom: max(10px, env(safe-area-inset-bottom, 10px));
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  #srt_drawer .footer button {
+    font-size: 11px;
+    padding: 7px 8px;
+  }
 }
 
 /* ── Drawer ─────────────────────────────────────────────────────────────────── */
@@ -89,6 +110,10 @@
   position: fixed;
   right: 0; top: 0;
   height: 100vh;
+  height: 100dvh; /* dynamic viewport — учитывает браузерную строку */
+  /* Отступ снизу под системную навигацию Android/iOS */
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  max-height: calc(100dvh - env(safe-area-inset-bottom, 0px));
   width: min(440px, 94vw);
   z-index: 10000;
   transform: translateX(100%);
@@ -100,6 +125,7 @@
   flex-direction: column;
   color: #eee;
   font-family: Consolas, monospace;
+  box-sizing: border-box;
 }
 #srt_drawer.open { transform: translateX(0); }
 
