@@ -715,27 +715,27 @@ ${history}
         <header>
           <div class="topline">
             <div class="title">🔐 СЕКРЕТЫ И ТАЙНЫ</div>
-            <button id="srt_close" title="Закрыть">✕</button>
+            <button type="button" id="srt_close" title="Закрыть" style="pointer-events:auto">✕</button>
           </div>
           <div class="sub" id="srt_subtitle"></div>
         </header>
         <div class="content" id="srt_content"></div>
         <div class="footer">
-          <button id="srt_scan_btn">🔍 Сканировать чат</button>
-          <button id="srt_quick_debug">🐛 Дебаг</button>
-          <button id="srt_quick_prompt">Промпт</button>
-          <button id="srt_quick_export">Экспорт</button>
-          <button id="srt_quick_import">Импорт</button>
-          <button id="srt_close2">Закрыть</button>
+          <button type="button" id="srt_scan_btn">🔍 Сканировать чат</button>
+          <button type="button" id="srt_quick_debug">🐛 Дебаг</button>
+          <button type="button" id="srt_quick_prompt">Промпт</button>
+          <button type="button" id="srt_quick_export">Экспорт</button>
+          <button type="button" id="srt_quick_import">Импорт</button>
+          <button type="button" id="srt_close2" style="pointer-events:auto">Закрыть</button>
         </div>
       </aside>
     `);
 
-    // Используем делегирование на document — устойчиво к любым перерендерам
-    $(document)
-      .off('click.srt_close')
-      .on('click.srt_close', '#srt_close, #srt_close2', () => openDrawer(false));
+    // Прямые обработчики на кнопки закрытия — самый надёжный способ
+    document.getElementById('srt_close').addEventListener('click',  () => openDrawer(false), true);
+    document.getElementById('srt_close2').addEventListener('click', () => openDrawer(false), true);
 
+    // Делегирование на document для остальных кнопок
     $(document)
       .off('click.srt_actions')
       .on('click.srt_actions', '#srt_quick_prompt',  () => showPromptPreview())
@@ -747,28 +747,35 @@ ${history}
 
   function openDrawer(open) {
     ensureDrawer();
-    const $drawer = $('#srt_drawer');
+    const drawer = document.getElementById('srt_drawer');
+    if (!drawer) return;
+
     if (open) {
-      // Создаём оверлей один раз
-      if (!$('#srt_overlay').length) {
-        $('<div id="srt_overlay"></div>').insertBefore('#srt_drawer');
+      // Оверлей — создаём один раз
+      if (!document.getElementById('srt_overlay')) {
+        const ov = document.createElement('div');
+        ov.id = 'srt_overlay';
+        document.body.insertBefore(ov, drawer);
+        // Используем capture чтобы поймать клик раньше всего остального
+        ov.addEventListener('click',      () => openDrawer(false), true);
+        ov.addEventListener('touchstart', (e) => { e.preventDefault(); openDrawer(false); }, { passive: false, capture: true });
       }
-      const $ov = $('#srt_overlay');
-      // Сбрасываем обработчики чтобы не дублировались
-      $ov.off('pointerdown click');
-      $ov.on('pointerdown click', (e) => { e.preventDefault(); e.stopPropagation(); openDrawer(false); });
-      $ov.show();
-      $drawer.addClass('open').attr('aria-hidden', 'false');
-      renderDrawer();
+      document.getElementById('srt_overlay').style.display = 'block';
+      drawer.classList.add('open');
+      drawer.setAttribute('aria-hidden', 'false');
+      renderDrawer(); // async, но ошибки не блокируют открытие
     } else {
-      $drawer.removeClass('open').attr('aria-hidden', 'true');
-      $('#srt_overlay').hide();
+      drawer.classList.remove('open');
+      drawer.setAttribute('aria-hidden', 'true');
+      const ov = document.getElementById('srt_overlay');
+      if (ov) ov.style.display = 'none';
     }
   }
 
   // ESC закрывает drawer
-  $(document).on('keydown.srt', (e) => {
-    if (e.key === 'Escape' && $('#srt_drawer').hasClass('open')) openDrawer(false);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.getElementById('srt_drawer')?.classList.contains('open'))
+      openDrawer(false);
   });
 
   async function renderWidget() {
