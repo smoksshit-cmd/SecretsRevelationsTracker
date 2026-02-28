@@ -740,9 +740,24 @@ ${history}
 
   function openDrawer(open) {
     ensureDrawer();
-    const el = $('#srt_drawer');
-    if (open) { el.addClass('open').attr('aria-hidden','false'); renderDrawer(); }
-    else       { el.removeClass('open').attr('aria-hidden','true'); }
+    const $drawer = $('#srt_drawer');
+    if (open) {
+      $drawer.addClass('open').attr('aria-hidden', 'false');
+      renderDrawer();
+      // Закрытие по тапу/клику вне панели — вешаем с небольшой задержкой
+      // чтобы текущий клик (на FAB) не закрыл её немедленно
+      setTimeout(() => {
+        $(document).on('pointerdown.srt_outside', (ev) => {
+          const drawer = document.getElementById('srt_drawer');
+          if (drawer && !drawer.contains(ev.target)) {
+            openDrawer(false);
+          }
+        });
+      }, 50);
+    } else {
+      $drawer.removeClass('open').attr('aria-hidden', 'true');
+      $(document).off('pointerdown.srt_outside');
+    }
   }
 
   async function renderWidget() {
