@@ -526,6 +526,23 @@ ${history}
 
   // ─── FAB widget ──────────────────────────────────────────────────────────────
 
+  // Размер вьюпорта с учётом визуальной области (корректно на мобиле/планшете)
+  function vpW() { return (window.visualViewport?.width  || window.innerWidth);  }
+  function vpH() { return (window.visualViewport?.height || window.innerHeight); }
+
+  // Размеры FAB — читаем из DOM если виден, иначе fallback по медиазапросу
+  function getFabDimensions() {
+    const el = document.getElementById('srt_fab');
+    if (el && el.offsetWidth > 0 && el.offsetHeight > 0) {
+      return { W: el.offsetWidth, H: el.offsetHeight };
+    }
+    const w = vpW();
+    // Планшет 481–1024: 62×58, телефон ≤480: 56×54, десктоп: 64×58
+    if (w <= 480)  return { W: 60, H: 58 };
+    if (w <= 1024) return { W: 66, H: 62 };
+    return { W: 64, H: 58 };
+  }
+
   function ensureFab() {
     if ($('#srt_fab').length) return;
     $('body').append(`
@@ -553,47 +570,73 @@ ${history}
     applyFabPosition();
   }
 
+  // Возвращает максимально допустимые left/top с учётом размеров экрана
+  function clampFabPos(left, top) {
+    const { W, H } = getFabDimensions();
+    const maxL = Math.max(FAB_MARGIN, vpW() - W - FAB_MARGIN);
+    const maxT = Math.max(FAB_MARGIN, vpH() - H - FAB_MARGIN);
+    return {
+      left: clamp(left, FAB_MARGIN, maxL),
+      top:  clamp(top,  FAB_MARGIN, maxT),
+    };
+  }
+
   function applyFabPosition() {
     const el = document.getElementById('srt_fab');
     if (!el) return;
     el.style.transform = 'none';
+    el.style.right  = 'auto';
+    el.style.bottom = 'auto';
+    const { W, H } = getFabDimensions();
+
     try {
       const raw = localStorage.getItem(FAB_POS_KEY);
       if (!raw) { setFabDefaultPosition(); return; }
       const pos = JSON.parse(raw);
-      if (!pos || typeof pos.x !== 'number') { setFabDefaultPosition(); return; }
-      const rect = el.getBoundingClientRect();
-      const w = window.innerWidth, h = window.innerHeight;
-      const W = rect.width || 60, H = rect.height || 60;
-      el.style.left   = clamp(Math.round(pos.x * (w - W)), FAB_MARGIN, w - W - FAB_MARGIN) + 'px';
-      el.style.top    = clamp(Math.round(pos.y * (h - H)), FAB_MARGIN, h - H - FAB_MARGIN) + 'px';
-      el.style.right  = 'auto';
-      el.style.bottom = 'auto';
+      let left, top;
+      if (typeof pos.x === 'number') {
+        // Процентный формат — пересчитываем под текущий экран
+        left = Math.round(pos.x * (vpW() - W - FAB_MARGIN * 2)) + FAB_MARGIN;
+        top  = Math.round(pos.y * (vpH() - H - FAB_MARGIN * 2)) + FAB_MARGIN;
+      } else if (typeof pos.left === 'number') {
+        left = pos.left;
+        top  = pos.top;
+      } else {
+        setFabDefaultPosition(); return;
+      }
+      const clamped = clampFabPos(left, top);
+      el.style.left = clamped.left + 'px';
+      el.style.top  = clamped.top  + 'px';
     } catch { setFabDefaultPosition(); }
   }
 
   function saveFabPositionPx(left, top) {
-    const el = document.getElementById('srt_fab');
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const w = window.innerWidth, h = window.innerHeight;
-    const W = rect.width || 60, H = rect.height || 60;
-    try { localStorage.setItem(FAB_POS_KEY, JSON.stringify({ x: clamp01(left / (w - W)), y: clamp01(top / (h - H)) })); } catch {}
+    const { W, H } = getFabDimensions();
+    const clamped = clampFabPos(left, top);
+    const rangeX = Math.max(1, vpW() - W - FAB_MARGIN * 2);
+    const rangeY = Math.max(1, vpH() - H - FAB_MARGIN * 2);
+    try {
+      localStorage.setItem(FAB_POS_KEY, JSON.stringify({
+        x:    clamp01((clamped.left - FAB_MARGIN) / rangeX),
+        y:    clamp01((clamped.top  - FAB_MARGIN) / rangeY),
+        left: clamped.left,
+        top:  clamped.top,
+      }));
+    } catch {}
   }
 
   function setFabDefaultPosition() {
     const el = document.getElementById('srt_fab');
     if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const W = rect.width || 60, H = rect.height || 60;
-    const left = window.innerWidth - W - FAB_MARGIN;
-    const top  = (window.innerHeight - H) / 2;
-    el.style.left   = clamp(left, FAB_MARGIN, window.innerWidth  - W - FAB_MARGIN) + 'px';
-    el.style.top    = clamp(top,  FAB_MARGIN, window.innerHeight - H - FAB_MARGIN) + 'px';
+    el.style.transform = 'none';
     el.style.right  = 'auto';
     el.style.bottom = 'auto';
-    el.style.transform = 'none';
-    saveFabPositionPx(parseInt(el.style.left) || 0, parseInt(el.style.top) || 0);
+    const { W, H } = getFabDimensions();
+    const left = clamp(vpW() - W - FAB_MARGIN, FAB_MARGIN, vpW() - W - FAB_MARGIN);
+    const top  = clamp(Math.round((vpH() - H) / 2), FAB_MARGIN, vpH() - H - FAB_MARGIN);
+    el.style.left = left + 'px';
+    el.style.top  = top  + 'px';
+    saveFabPositionPx(left, top);
   }
 
   function initFabDrag() {
@@ -609,10 +652,9 @@ ${history}
       const dx = ev.clientX - sx, dy = ev.clientY - sy;
       if (!moved && Math.abs(dx) + Math.abs(dy) > THRESHOLD) { moved = true; fab.classList.add('srt-dragging'); }
       if (!moved) return;
-      const rect = fab.getBoundingClientRect();
-      const w = window.innerWidth, h = window.innerHeight;
-      fab.style.left   = clamp(sl + dx, FAB_MARGIN, w - rect.width  - FAB_MARGIN) + 'px';
-      fab.style.top    = clamp(st + dy, FAB_MARGIN, h - rect.height - FAB_MARGIN) + 'px';
+      const pos = clampFabPos(sl + dx, st + dy);
+      fab.style.left   = pos.left + 'px';
+      fab.style.top    = pos.top  + 'px';
       fab.style.right  = 'auto'; fab.style.bottom = 'auto';
       ev.preventDefault(); ev.stopPropagation();
     };
@@ -629,13 +671,16 @@ ${history}
 
     handle.addEventListener('pointerdown', (ev) => {
       if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-      const rect = fab.getBoundingClientRect();
-      const w = window.innerWidth, h = window.innerHeight;
-      fab.style.left   = clamp(rect.left, FAB_MARGIN, w - rect.width  - FAB_MARGIN) + 'px';
-      fab.style.top    = clamp(rect.top,  FAB_MARGIN, h - rect.height - FAB_MARGIN) + 'px';
+      // Читаем текущую позицию и клампируем на случай если экран сменился
+      const { W, H } = getFabDimensions();
+      const curLeft = parseInt(fab.style.left) || (vpW() - W - FAB_MARGIN);
+      const curTop  = parseInt(fab.style.top)  || Math.round((vpH() - H) / 2);
+      const pos = clampFabPos(curLeft, curTop);
+      fab.style.left   = pos.left + 'px';
+      fab.style.top    = pos.top  + 'px';
       fab.style.right  = 'auto'; fab.style.bottom = 'auto'; fab.style.transform = 'none';
       sx = ev.clientX; sy = ev.clientY;
-      sl = parseInt(fab.style.left)||0; st = parseInt(fab.style.top)||0;
+      sl = pos.left; st = pos.top;
       moved = false;
       try { handle.setPointerCapture(ev.pointerId); } catch {}
       document.addEventListener('pointermove', onMove, { passive: false });
@@ -644,8 +689,21 @@ ${history}
       ev.preventDefault(); ev.stopPropagation();
     }, { passive: false });
 
+    // Переприжимаем при resize и смене ориентации (планшет/телефон)
     let resizeT = null;
-    window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(applyFabPosition, 120); });
+    const onResize = () => {
+      clearTimeout(resizeT);
+      resizeT = setTimeout(() => {
+        // Пересчитываем позицию из сохранённых процентов под новый размер экрана
+        applyFabPosition();
+      }, 200);
+    };
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', () => { clearTimeout(resizeT); resizeT = setTimeout(applyFabPosition, 350); });
+    // visualViewport — корректно отрабатывает появление/скрытие клавиатуры на планшете
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', onResize);
+    }
   }
 
   // ─── DRAWER ──────────────────────────────────────────────────────────────────
