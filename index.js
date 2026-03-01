@@ -214,15 +214,26 @@
   async function aiGenerate(userPrompt, systemPrompt) {
     const s    = getSettings();
     const base = getBaseUrl();
+    const key  = (s.apiKey || '').trim();
 
-    // Если задан свой API
-    if (base && s.apiKey) {
-      const url  = `${base}/v1/chat/completions`;
-      const resp = await fetch(url, {
+    // Проверяем что API настроен — без этого НЕ падаем в generateRaw
+    // generateRaw запускает видимую генерацию ST в чат, что ломает интерфейс
+    if (!base || !key) {
+      throw new Error(
+        'Не настроен API для сканирования.\n' +
+        'Зайди в настройки расширения → раздел "API для сканирования" → ' +
+        'укажи Endpoint и API Key, затем выбери модель кнопкой 🔄'
+      );
+    }
+
+    const url  = `${base}/v1/chat/completions`;
+    let resp;
+    try {
+      resp = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${s.apiKey}`,
+          'Authorization': `Bearer ${key}`,
         },
         body: JSON.stringify({
           model:       s.apiModel || 'gpt-4o-mini',
@@ -234,30 +245,28 @@
           ],
         }),
       });
-
-      if (!resp.ok) {
-        const err = await resp.text().catch(() => resp.statusText);
-        throw new Error(`API error ${resp.status}: ${err.slice(0, 300)}`);
-      }
-
-      const data = await resp.json();
-      return data.choices?.[0]?.message?.content
-          ?? data.choices?.[0]?.text
-          ?? data.content?.[0]?.text   // Anthropic
-          ?? '';
+    } catch (netErr) {
+      throw new Error(`Сетевая ошибка при подключении к ${url}: ${netErr.message}`);
     }
 
-    // Иначе — ST встроенный generateRaw
-    const c = ctx();
-    if (typeof c.generateRaw === 'function') {
-      try {
-        return await c.generateRaw(userPrompt, null, false, false, systemPrompt, true);
-      } catch (e) {
-        console.warn('[SRT] generateRaw failed', e);
-      }
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => resp.statusText);
+      throw new Error(`API вернул ${resp.status}: ${errText.slice(0, 400)}`);
     }
-    if (typeof c.Generate === 'function') return await c.Generate('quiet');
-    throw new Error('Не задан API и нет встроенного generate в SillyTavern');
+
+    const data = await resp.json();
+    const content = data.choices?.[0]?.message?.content
+                 ?? data.choices?.[0]?.text
+                 ?? data.content?.[0]?.text   // Anthropic
+                 ?? null;
+
+    if (content === null || content === '') {
+      throw new Error(
+        `API вернул пустой ответ. Сырой ответ:\n${JSON.stringify(data).slice(0, 500)}`
+      );
+    }
+
+    return content;
   }
 
   // ─── PROMPT BLOCK ────────────────────────────────────────────────────────────
@@ -392,18 +401,24 @@ ${history}
 
       // Надёжная очистка: вырезаем первый JSON-объект из ответа
       function extractJson(s) {
-        // 1. Убираем markdown-блоки ```json ... ```
+        // 1. Убираем markdown-блоки
         let t = s.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
-        // 2. Находим первый { и последний } — берём всё между ними
+        // 2. Находим первый { и последний }
         const start = t.indexOf('{');
         const end   = t.lastIndexOf('}');
         if (start === -1 || end === -1) throw new Error('JSON-объект не найден в ответе модели');
         t = t.slice(start, end + 1);
-        // 3. Одинарные кавычки → двойные (некоторые модели используют их)
-        t = t.replace(/'/g, '"');
-        // 4. Trailing commas перед ] или } (невалидный JSON)
+        // 3. Trailing commas перед ] или } (невалидный JSON)
         t = t.replace(/,\s*([}\]])/g, '$1');
-        return t;
+        // 4. Пробуем напрямую — если валидный JSON, не трогаем
+        try { JSON.parse(t); return t; } catch {}
+        // 5. Чиним одинарные кавычки как JSON-разделители (некоторые модели)
+        //    Заменяем только структурные кавычки, НЕ апострофы внутри текста
+        const fixed = t
+          .replace(/([{,\[])\s*'([^'\\]*)'\s*:/g, (_, pre, key) => `${pre} "${key}":`)
+          .replace(/:\s*'([^'\\]*)'/g, (_, val) => `: "${val}"`);
+        // 6. Trailing commas ещё раз (могли появиться после замены)
+        return fixed.replace(/,\s*([}\]])/g, '$1');
       }
 
       const parsed = JSON.parse(extractJson(raw));
@@ -738,6 +753,7 @@ ${history}
         <div class="footer">
           <button type="button" id="srt_scan_btn">🔍 Сканировать чат</button>
           <button type="button" id="srt_quick_debug">🐛 Дебаг</button>
+          <button type="button" id="srt_quick_test">🧪 Тест API</button>
           <button type="button" id="srt_quick_prompt">Промпт</button>
           <button type="button" id="srt_quick_export">Экспорт</button>
           <button type="button" id="srt_quick_import">Импорт</button>
@@ -755,6 +771,7 @@ ${history}
       .off('click.srt_actions')
       .on('click.srt_actions', '#srt_quick_prompt',  () => showPromptPreview())
       .on('click.srt_actions', '#srt_quick_debug',   () => showDebugInfo())
+      .on('click.srt_actions', '#srt_quick_test',    () => testApiAndJson())
       .on('click.srt_actions', '#srt_quick_export',  () => exportJson())
       .on('click.srt_actions', '#srt_quick_import',  () => importJson())
       .on('click.srt_actions', '#srt_scan_btn',      () => scanChatForSecrets());
@@ -973,6 +990,51 @@ ${history}
 
   // ─── Import / Export / Prompt preview ───────────────────────────────────────
 
+  async function testApiAndJson() {
+    const $btn = $('#srt_quick_test');
+    $btn.prop('disabled', true).text('⏳');
+    let rawResponse = '';
+    try {
+      const system = `Верни ТОЛЬКО валидный JSON без преамбулы и markdown:
+{"npcSecrets":[{"text":"тест секрет","tag":"none","knownToUser":false}],"userSecrets":[],"mutualSecrets":[]}`;
+      const user = 'Это тестовый запрос. Верни ровно тот JSON что указан в инструкции.';
+
+      rawResponse = await aiGenerate(user, system);
+
+      // Пробуем парсить тем же кодом что при сканировании
+      function extractJson(s) {
+        let t = s.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
+        const start = t.indexOf('{'); const end = t.lastIndexOf('}');
+        if (start === -1 || end === -1) throw new Error('JSON-объект не найден в ответе');
+        t = t.slice(start, end + 1);
+        t = t.replace(/,\s*([}\]])/g, '$1');
+        try { JSON.parse(t); return t; } catch {}
+        const fixed = t
+          .replace(/([{,\[])\s*'([^'\\]*)'\s*:/g, (_, pre, key) => `${pre} "${key}":`)
+          .replace(/:\s*'([^'\\]*)'/g, (_, val) => `: "${val}"`);
+        return fixed.replace(/,\s*([}\]])/g, '$1');
+      }
+
+      const cleaned = extractJson(rawResponse);
+      const parsed  = JSON.parse(cleaned);
+
+      const status = parsed.npcSecrets?.length > 0 ? '✅ УСПЕХ' : '⚠️ Парсинг ок, но секреты не найдены';
+      await ctx().Popup.show.text('🧪 Тест API — результат',
+        `<pre style="white-space:pre-wrap;font-size:11px;font-family:Consolas,monospace;max-height:65vh;overflow:auto">${escapeHtml(
+          `${status}\n\n━━━ СЫРОЙ ОТВЕТ МОДЕЛИ ━━━\n${rawResponse}\n\n━━━ ПОСЛЕ ОЧИСТКИ ━━━\n${cleaned}\n\n━━━ РАСПАРСЕННЫЙ ОБЪЕКТ ━━━\n${JSON.stringify(parsed, null, 2)}`
+        )}</pre>`
+      );
+    } catch(e) {
+      await ctx().Popup.show.text('🧪 Тест API — ОШИБКА',
+        `<pre style="white-space:pre-wrap;font-size:11px;font-family:Consolas,monospace;color:#e74c3c;max-height:65vh;overflow:auto">${escapeHtml(
+          `❌ ${e.message}\n\n━━━ СЫРОЙ ОТВЕТ (если был) ━━━\n${rawResponse || '[пусто — ошибка до получения ответа]'}`
+        )}</pre>`
+      );
+    } finally {
+      $btn.prop('disabled', false).text('🧪 Тест API');
+    }
+  }
+
   async function showDebugInfo() {
     const state   = await getChatState();
     const settings = getSettings();
@@ -1138,6 +1200,7 @@ ${history}
             </div>
 
             <div class="srt-row" style="margin-top:8px">
+              <button type="button" id="srt_api_test" class="menu_button" style="padding:5px 10px;flex-shrink:0">🧪 Тест соединения</button>
               <span id="srt_api_status" style="font-size:11px;opacity:0.75;flex:1"></span>
             </div>
           </div>
@@ -1223,6 +1286,22 @@ ${history}
       .off('click.srt_settings')
       .on('click.srt_settings', '#srt_open_drawer',       () => openDrawer(true))
       .on('click.srt_settings', '#srt_scan_settings_btn', () => scanChatForSecrets())
+      .on('click.srt_settings', '#srt_api_test', async () => {
+        const $status = $('#srt_api_status');
+        const $btn    = $('#srt_api_test');
+        $btn.prop('disabled', true).text('⏳');
+        $status.css('color', '').text('Проверяем…');
+        try {
+          const models = await fetchModelsForSelect();
+          $status.css('color', '#2ecc71').text(`✅ Соединение OK · моделей: ${models.length}`);
+          toastr.success(`API работает, доступно моделей: ${models.length}`);
+        } catch (e) {
+          $status.css('color', '#e74c3c').text(`❌ ${e.message}`);
+          toastr.error(`[SRT] Тест API: ${e.message}`);
+        } finally {
+          $btn.prop('disabled', false).text('🧪 Тест соединения');
+        }
+      })
       .on('click.srt_settings', '#srt_prompt_preview',    () => showPromptPreview())
       .on('click.srt_settings', '#srt_export_json',       () => exportJson())
       .on('click.srt_settings', '#srt_import_json',       () => importJson())
