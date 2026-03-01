@@ -368,19 +368,26 @@ ${fmt(state.mutualSecrets)}
 - Описания обстановки, действий без скрытого смысла
 - Общеизвестные факты о персонаже
 
+ТЕГИ — выбери ОДИН для каждого секрета:
+- "dangerous"  → угроза жизни, насилие, серьёзный физический вред, зависимости
+- "personal"   → эмоциональные тайны, личные травмы, скрытые чувства, отношения
+- "kompromat"  → информация которую можно использовать как рычаг давления или шантаж
+- "none"       → только если секрет не подходит ни под одну категорию выше
+
 Верни ТОЛЬКО валидный JSON без преамбулы и markdown-блоков:
 {
   "npcSecrets": [
-    {"text": "краткое описание (до 15 слов)", "tag": "none|dangerous|personal|kompromat", "knownToUser": true|false}
+    {"text": "краткое описание до 15 слов", "tag": "dangerous", "knownToUser": false},
+    {"text": "краткое описание до 15 слов", "tag": "personal", "knownToUser": true}
   ],
   "userSecrets": [
-    {"text": "краткое описание (до 15 слов)", "tag": "none|dangerous|personal|kompromat", "knownToNpc": true|false}
+    {"text": "краткое описание до 15 слов", "tag": "kompromat", "knownToNpc": false}
   ],
   "mutualSecrets": [
-    {"text": "краткое описание (до 15 слов)", "tag": "none|dangerous|personal|kompromat"}
+    {"text": "краткое описание до 15 слов", "tag": "personal"}
   ]
 }
-Теги: dangerous=угроза жизни/серьёзный вред, personal=эмоциональный/личный, kompromat=рычаг давления
+ВАЖНО: поле "tag" должно быть ТОЧНО одним из: "dangerous", "personal", "kompromat", "none"
 knownToUser/knownToNpc=true ТОЛЬКО если в тексте явно видно что персонаж это узнал
 Если секретов нет — верни пустые массивы${existingBlock}`;
 
@@ -462,21 +469,35 @@ ${history}
         return existingPool.some(ex => similarity(ex, text) >= SIM_THRESHOLD);
       }
 
+      const VALID_TAGS = new Set(['none', 'dangerous', 'personal', 'kompromat']);
+
+      // Нормализует тег: исправляет опечатки и близкие варианты от модели
+      function normalizeTag(raw) {
+        if (!raw) return 'none';
+        const t = String(raw).toLowerCase().trim();
+        if (VALID_TAGS.has(t)) return t;
+        // Частые варианты от моделей
+        if (t.includes('danger') || t.includes('опасн') || t.includes('harm') || t.includes('violent')) return 'dangerous';
+        if (t.includes('personal') || t.includes('личн') || t.includes('эмоц') || t.includes('trauma')) return 'personal';
+        if (t.includes('kompro') || t.includes('компро') || t.includes('blackmail') || t.includes('lever')) return 'kompromat';
+        return 'none';
+      }
+
       for (const it of (parsed.npcSecrets || [])) {
         if (!it.text || isDuplicate(it.text)) continue;
-        state.npcSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none', knownToUser: !!it.knownToUser });
+        state.npcSecrets.unshift({ id: makeId(), text: it.text, tag: normalizeTag(it.tag), knownToUser: !!it.knownToUser });
         existingPool.push(it.text);
         addedNpc++;
       }
       for (const it of (parsed.userSecrets || [])) {
         if (!it.text || isDuplicate(it.text)) continue;
-        state.userSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none', knownToNpc: !!it.knownToNpc });
+        state.userSecrets.unshift({ id: makeId(), text: it.text, tag: normalizeTag(it.tag), knownToNpc: !!it.knownToNpc });
         existingPool.push(it.text);
         addedUser++;
       }
       for (const it of (parsed.mutualSecrets || [])) {
         if (!it.text || isDuplicate(it.text)) continue;
-        state.mutualSecrets.unshift({ id: makeId(), text: it.text, tag: it.tag || 'none' });
+        state.mutualSecrets.unshift({ id: makeId(), text: it.text, tag: normalizeTag(it.tag) });
         existingPool.push(it.text);
         addedMutual++;
       }
