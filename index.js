@@ -390,9 +390,23 @@ ${history}
       const raw = await aiGenerate(user, system);
       if (!raw) throw new Error('Пустой ответ от модели');
 
-      // Strip markdown fences if model added them
-      const clean = raw.replace(/```json|```/gi, '').trim();
-      const parsed = JSON.parse(clean);
+      // Надёжная очистка: вырезаем первый JSON-объект из ответа
+      function extractJson(s) {
+        // 1. Убираем markdown-блоки ```json ... ```
+        let t = s.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
+        // 2. Находим первый { и последний } — берём всё между ними
+        const start = t.indexOf('{');
+        const end   = t.lastIndexOf('}');
+        if (start === -1 || end === -1) throw new Error('JSON-объект не найден в ответе модели');
+        t = t.slice(start, end + 1);
+        // 3. Одинарные кавычки → двойные (некоторые модели используют их)
+        t = t.replace(/'/g, '"');
+        // 4. Trailing commas перед ] или } (невалидный JSON)
+        t = t.replace(/,\s*([}\]])/g, '$1');
+        return t;
+      }
+
+      const parsed = JSON.parse(extractJson(raw));
 
       let addedNpc = 0, addedUser = 0, addedMutual = 0;
 
@@ -473,7 +487,8 @@ ${history}
       }
     } catch (e) {
       console.error('[SRT] scan failed', e);
-      toastr.error(`[SRT] Ошибка анализа: ${e.message}`);
+      const hint = e.message.includes('JSON') ? ' (модель вернула не-JSON ответ)' : '';
+      toastr.error(`[SRT] Ошибка анализа: ${e.message}${hint}`, 'SRT', { timeOut: 8000 });
     } finally {
       scanInProgress = false;
       $btn.prop('disabled', false).text('🔍 Сканировать чат');
