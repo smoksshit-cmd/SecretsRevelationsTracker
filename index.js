@@ -1,11 +1,14 @@
 /**
  * Secrets & Revelations Tracker (SillyTavern Extension)
- * v0.5.3 — Auto-scan chat for secrets + live reveal detection
+ * v0.5.4 — Fix: export download + import file button, popup handler timing
  *
- * New features:
- *  - "Сканировать чат" — AI анализирует историю чата и предлагает секреты
- *  - Авто-детект раскрытий — после каждого сообщения {{char}} проверяет, не открылась ли тайна
- *  - Инжектированный промпт явно просит модель сигнализировать [REVEAL:...] при раскрытии
+ * BUGFIXES:
+ *  - exportJson / importJson: removed `await` before Popup.show.text() —
+ *    the promise resolves WHEN THE POPUP IS CLOSED, so all addEventListener
+ *    calls after await ran on elements that no longer existed in the DOM.
+ *    Fix: call Popup without await, then attach handlers via setTimeout(0).
+ *  - importJson: file input change handler was also unreachable for same reason.
+ *  - Minor: normalised a few stale variable references.
  */
 
 (() => {
@@ -46,7 +49,7 @@
     position:     EXT_PROMPT_TYPES.IN_PROMPT,
     depth:        0,
     // ── Свой API для сканирования ──
-    apiEndpoint:  '',   // напр. https://api.openai.com/v1/chat/completions
+    apiEndpoint:  '',
     apiKey:       '',
     apiModel:     'gpt-4o-mini',
   });
@@ -56,7 +59,7 @@
   function ctx() { return SillyTavern.getContext(); }
 
   function getSettings() {
-    const { extensionSettings, saveSettingsDebounced } = ctx();
+    const { extensionSettings } = ctx();
     if (!extensionSettings[MODULE_KEY])
       extensionSettings[MODULE_KEY] = structuredClone(defaultSettings);
     for (const k of Object.keys(defaultSettings))
@@ -65,10 +68,8 @@
     return extensionSettings[MODULE_KEY];
   }
 
-  // Уникальный ключ для текущего чата — включает ID персонажа/группы чтобы секреты не утекли
   function currentChatBoundKey() {
     const c = ctx();
-    // ST хранит текущий файл чата в c.getCurrentChatId() или c.chatId
     const chatId = (typeof c.getCurrentChatId === 'function' ? c.getCurrentChatId() : null)
                    || c.chatId
                    || 'unknown_chat';
@@ -99,9 +100,9 @@
     return chatMetadata[key];
   }
 
-  function makeId()       { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`; }
-  function clamp(v,mn,mx){ return Math.max(mn, Math.min(mx, v)); }
-  function clamp01(v)    { return Math.max(0, Math.min(1, v)); }
+  function makeId()        { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`; }
+  function clamp(v, mn, mx){ return Math.max(mn, Math.min(mx, v)); }
+  function clamp01(v)      { return Math.max(0, Math.min(1, v)); }
 
   function escapeHtml(s) {
     return String(s)
@@ -125,7 +126,8 @@
   }
 
   function leverageScore(items) {
-    return items.reduce((s,it) => s + (it.tag === 'kompromat' || it.tag === 'dangerous' ? 2 : it.tag === 'personal' ? 1 : 0), 0);
+    return items.reduce((s, it) =>
+      s + (it.tag === 'kompromat' || it.tag === 'dangerous' ? 2 : it.tag === 'personal' ? 1 : 0), 0);
   }
 
   // ─── last N messages from chat ───────────────────────────────────────────────
@@ -160,10 +162,6 @@
 
   // ─── AI API helpers ───────────────────────────────────────────────────────────
 
-  // Нормализует endpoint как в Love Score:
-  // "https://api.example.com/v1/chat/completions" → "https://api.example.com"
-  // "https://api.example.com/v1"                  → "https://api.example.com"
-  // "https://api.example.com"                     → "https://api.example.com"
   function getBaseUrl() {
     const s = getSettings();
     return (s.apiEndpoint || '').trim()
@@ -216,8 +214,6 @@
     const base = getBaseUrl();
     const key  = (s.apiKey || '').trim();
 
-    // Проверяем что API настроен — без этого НЕ падаем в generateRaw
-    // generateRaw запускает видимую генерацию ST в чат, что ломает интерфейс
     if (!base || !key) {
       throw new Error(
         'Не настроен API для сканирования.\n' +
@@ -272,14 +268,14 @@
   // ─── PROMPT BLOCK ────────────────────────────────────────────────────────────
 
   function buildPromptBlock(state) {
-    const npcKnownToUser   = state.npcSecrets.filter(s =>  s.knownToUser);
-    const npcHiddenFromUser= state.npcSecrets.filter(s => !s.knownToUser);
-    const userKnownToNpc   = state.userSecrets.filter(s =>  s.knownToNpc);
+    const npcKnownToUser    = state.npcSecrets.filter(s =>  s.knownToUser);
+    const npcHiddenFromUser = state.npcSecrets.filter(s => !s.knownToUser);
+    const userKnownToNpc    = state.userSecrets.filter(s =>  s.knownToNpc);
 
     const revealed = npcKnownToUser.length + state.userSecrets.length + state.mutualSecrets.length;
     const hidden   = npcHiddenFromUser.length;
 
-    const fmt = arr => formatList(arr.map(s => `${s.text}${TAGS[s.tag]?.icon ? ' '+TAGS[s.tag].icon : ''}`));
+    const fmt = arr => formatList(arr.map(s => `${s.text}${TAGS[s.tag]?.icon ? ' ' + TAGS[s.tag].icon : ''}`));
 
     const npcLeverage  = leverageScore(userKnownToNpc);
     const userLeverage = leverageScore(npcKnownToUser);
@@ -328,7 +324,7 @@ ${fmt(state.mutualSecrets)}
     await renderWidget();
   }
 
-  // ─── AUTO-SCAN: extract secrets from chat history ───────────────────────────
+  // ─── AUTO-SCAN ───────────────────────────────────────────────────────────────
 
   async function scanChatForSecrets() {
     if (scanInProgress) return toastr.warning('[SRT] Сканирование уже идёт…');
@@ -343,7 +339,6 @@ ${fmt(state.mutualSecrets)}
       const state = await getChatState();
       const { saveMetadata } = ctx();
 
-      // Собираем уже известные секреты для передачи модели
       const existingList = [
         ...state.npcSecrets.map(s    => `[{{char}}] ${s.text}`),
         ...state.userSecrets.map(s   => `[{{user}}] ${s.text}`),
@@ -406,25 +401,17 @@ ${history}
       const raw = await aiGenerate(user, system);
       if (!raw) throw new Error('Пустой ответ от модели');
 
-      // Надёжная очистка: вырезаем первый JSON-объект из ответа
       function extractJson(s) {
-        // 1. Убираем markdown-блоки
         let t = s.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
-        // 2. Находим первый { и последний }
         const start = t.indexOf('{');
         const end   = t.lastIndexOf('}');
         if (start === -1 || end === -1) throw new Error('JSON-объект не найден в ответе модели');
         t = t.slice(start, end + 1);
-        // 3. Trailing commas перед ] или } (невалидный JSON)
         t = t.replace(/,\s*([}\]])/g, '$1');
-        // 4. Пробуем напрямую — если валидный JSON, не трогаем
         try { JSON.parse(t); return t; } catch {}
-        // 5. Чиним одинарные кавычки как JSON-разделители (некоторые модели)
-        //    Заменяем только структурные кавычки, НЕ апострофы внутри текста
         const fixed = t
           .replace(/([{,\[])\s*'([^'\\]*)'\s*:/g, (_, pre, key) => `${pre} "${key}":`)
           .replace(/:\s*'([^'\\]*)'/g, (_, val) => `: "${val}"`);
-        // 6. Trailing commas ещё раз (могли появиться после замены)
         return fixed.replace(/,\s*([}\]])/g, '$1');
       }
 
@@ -432,19 +419,14 @@ ${history}
 
       let addedNpc = 0, addedUser = 0, addedMutual = 0;
 
-      // ── Fuzzy dedup helpers ──────────────────────────────────────────────────
-      // Нормализация: нижний регистр + убираем знаки препинания
       const norm = s => s.toLowerCase().replace(/[^\wа-яёa-z0-9\s]/gi, '').replace(/\s+/g, ' ').trim();
 
-      // Общие слова (≥4 букв) между двумя строками / длина большей
       function similarity(a, b) {
         const na = norm(a), nb = norm(b);
-        // Прямое вхождение (одна фраза является частью другой)
         if (na.includes(nb) || nb.includes(na)) return 1;
         const wa = new Set(na.split(' ').filter(w => w.length >= 4));
         const wb = new Set(nb.split(' ').filter(w => w.length >= 4));
         if (!wa.size && !wb.size) return na === nb ? 1 : 0;
-        // Если слов мало — снижаем минимальный размер до 3 букв
         if (wa.size < 2 || wb.size < 2) {
           const wa2 = new Set(na.split(' ').filter(w => w.length >= 3));
           const wb2 = new Set(nb.split(' ').filter(w => w.length >= 3));
@@ -456,9 +438,8 @@ ${history}
         return common / Math.max(wa.size, wb.size);
       }
 
-      const SIM_THRESHOLD = 0.45; // ≥45% совпадения слов → дубль
+      const SIM_THRESHOLD = 0.45;
 
-      // Все существующие тексты (живое множество, пополняется при добавлении)
       const existingPool = [
         ...state.npcSecrets.map(s => s.text),
         ...state.userSecrets.map(s => s.text),
@@ -471,12 +452,10 @@ ${history}
 
       const VALID_TAGS = new Set(['none', 'dangerous', 'personal', 'kompromat']);
 
-      // Нормализует тег: исправляет опечатки и близкие варианты от модели
       function normalizeTag(raw) {
         if (!raw) return 'none';
         const t = String(raw).toLowerCase().trim();
         if (VALID_TAGS.has(t)) return t;
-        // Частые варианты от моделей
         if (t.includes('danger') || t.includes('опасн') || t.includes('harm') || t.includes('violent')) return 'dangerous';
         if (t.includes('personal') || t.includes('личн') || t.includes('эмоц') || t.includes('trauma')) return 'personal';
         if (t.includes('kompro') || t.includes('компро') || t.includes('blackmail') || t.includes('lever')) return 'kompromat';
@@ -532,7 +511,7 @@ ${history}
     }
   }
 
-  // ─── AUTO-DETECT reveals in new messages ────────────────────────────────────
+  // ─── AUTO-DETECT reveals ─────────────────────────────────────────────────────
 
   async function detectRevealInMessage(messageText) {
     if (!messageText) return;
@@ -550,7 +529,6 @@ ${history}
       const revealedText = m[1].trim();
       if (!revealedText) continue;
 
-      // Try to match to an existing hidden {{char}} secret
       const candidate = state.npcSecrets.find(s =>
         !s.knownToUser &&
         (s.text.toLowerCase().includes(revealedText.toLowerCase()) ||
@@ -562,7 +540,6 @@ ${history}
         changed = true;
         toastr.info(`🔓 Секрет раскрыт: «${candidate.text}»`, 'SRT Авто-детект', { timeOut: 5000 });
       } else {
-        // New secret revealed — add to npcSecrets as known
         state.npcSecrets.unshift({ id: makeId(), text: revealedText, tag: 'none', knownToUser: true });
         changed = true;
         toastr.info(`🔓 Новый раскрытый секрет: «${revealedText}»`, 'SRT Авто-детект', { timeOut: 5000 });
@@ -579,18 +556,15 @@ ${history}
 
   // ─── FAB widget ──────────────────────────────────────────────────────────────
 
-  // Размер вьюпорта с учётом визуальной области (корректно на мобиле/планшете)
   function vpW() { return (window.visualViewport?.width  || window.innerWidth);  }
   function vpH() { return (window.visualViewport?.height || window.innerHeight); }
 
-  // Размеры FAB — читаем из DOM если виден, иначе fallback по медиазапросу
   function getFabDimensions() {
     const el = document.getElementById('srt_fab');
     if (el && el.offsetWidth > 0 && el.offsetHeight > 0) {
       return { W: el.offsetWidth, H: el.offsetHeight };
     }
     const w = vpW();
-    // Планшет 481–1024: 62×58, телефон ≤480: 56×54, десктоп: 64×58
     if (w <= 480)  return { W: 60, H: 58 };
     if (w <= 1024) return { W: 66, H: 62 };
     return { W: 64, H: 58 };
@@ -623,7 +597,6 @@ ${history}
     applyFabPosition();
   }
 
-  // Возвращает максимально допустимые left/top с учётом размеров экрана
   function clampFabPos(left, top) {
     const { W, H } = getFabDimensions();
     const maxL = Math.max(FAB_MARGIN, vpW() - W - FAB_MARGIN);
@@ -648,7 +621,6 @@ ${history}
       const pos = JSON.parse(raw);
       let left, top;
       if (typeof pos.x === 'number') {
-        // Процентный формат — пересчитываем под текущий экран
         left = Math.round(pos.x * (vpW() - W - FAB_MARGIN * 2)) + FAB_MARGIN;
         top  = Math.round(pos.y * (vpH() - H - FAB_MARGIN * 2)) + FAB_MARGIN;
       } else if (typeof pos.left === 'number') {
@@ -716,15 +688,14 @@ ${history}
       try { handle.releasePointerCapture(ev.pointerId); } catch {}
       document.removeEventListener('pointermove', onMove, { passive: false });
       document.removeEventListener('pointerup',   onEnd,  { passive: true });
-      document.removeEventListener('pointercancel',onEnd, { passive: true });
-      if (moved) { saveFabPositionPx(parseInt(fab.style.left)||0, parseInt(fab.style.top)||0); lastFabDragTs = Date.now(); }
+      document.removeEventListener('pointercancel', onEnd, { passive: true });
+      if (moved) { saveFabPositionPx(parseInt(fab.style.left) || 0, parseInt(fab.style.top) || 0); lastFabDragTs = Date.now(); }
       moved = false;
       fab.classList.remove('srt-dragging');
     };
 
     handle.addEventListener('pointerdown', (ev) => {
       if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-      // Читаем текущую позицию и клампируем на случай если экран сменился
       const { W, H } = getFabDimensions();
       const curLeft = parseInt(fab.style.left) || (vpW() - W - FAB_MARGIN);
       const curTop  = parseInt(fab.style.top)  || Math.round((vpH() - H) / 2);
@@ -738,22 +709,17 @@ ${history}
       try { handle.setPointerCapture(ev.pointerId); } catch {}
       document.addEventListener('pointermove', onMove, { passive: false });
       document.addEventListener('pointerup',   onEnd,  { passive: true });
-      document.addEventListener('pointercancel',onEnd, { passive: true });
+      document.addEventListener('pointercancel', onEnd, { passive: true });
       ev.preventDefault(); ev.stopPropagation();
     }, { passive: false });
 
-    // Переприжимаем при resize и смене ориентации (планшет/телефон)
     let resizeT = null;
     const onResize = () => {
       clearTimeout(resizeT);
-      resizeT = setTimeout(() => {
-        // Пересчитываем позицию из сохранённых процентов под новый размер экрана
-        applyFabPosition();
-      }, 200);
+      resizeT = setTimeout(() => { applyFabPosition(); }, 200);
     };
     window.addEventListener('resize', onResize);
     window.addEventListener('orientationchange', () => { clearTimeout(resizeT); resizeT = setTimeout(applyFabPosition, 350); });
-    // visualViewport — корректно отрабатывает появление/скрытие клавиатуры на планшете
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', onResize);
     }
@@ -785,11 +751,9 @@ ${history}
       </aside>
     `);
 
-    // Прямые обработчики на кнопки закрытия — самый надёжный способ
     document.getElementById('srt_close').addEventListener('click',  () => openDrawer(false), true);
     document.getElementById('srt_close2').addEventListener('click', () => openDrawer(false), true);
 
-    // Делегирование на document для остальных кнопок
     $(document)
       .off('click.srt_actions')
       .on('click.srt_actions', '#srt_quick_prompt',  () => showPromptPreview())
@@ -806,19 +770,17 @@ ${history}
     if (!drawer) return;
 
     if (open) {
-      // Оверлей — создаём один раз
       if (!document.getElementById('srt_overlay')) {
         const ov = document.createElement('div');
         ov.id = 'srt_overlay';
         document.body.insertBefore(ov, drawer);
-        // Используем capture чтобы поймать клик раньше всего остального
         ov.addEventListener('click',      () => openDrawer(false), true);
         ov.addEventListener('touchstart', (e) => { e.preventDefault(); openDrawer(false); }, { passive: false, capture: true });
       }
       document.getElementById('srt_overlay').style.display = 'block';
       drawer.classList.add('srt-open');
       drawer.setAttribute('aria-hidden', 'false');
-      renderDrawer(); // async, но ошибки не блокируют открытие
+      renderDrawer();
     } else {
       drawer.classList.remove('srt-open');
       drawer.setAttribute('aria-hidden', 'true');
@@ -827,7 +789,6 @@ ${history}
     }
   }
 
-  // ESC закрывает drawer
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && document.getElementById('srt_drawer')?.classList.contains('srt-open'))
       openDrawer(false);
@@ -848,16 +809,16 @@ ${history}
 
   function tagOptionsHtml(selected) {
     return Object.keys(TAGS).map(k =>
-      `<option value="${k}" ${k===selected?'selected':''}>${escapeHtml(TAGS[k].label)}</option>`
+      `<option value="${k}" ${k === selected ? 'selected' : ''}>${escapeHtml(TAGS[k].label)}</option>`
     ).join('');
   }
 
   function renderItemRow(item, kind) {
     const icon = TAGS[item.tag]?.icon ?? '';
     const toggle = kind === 'npc'
-      ? `<label title="Известно {{user}}"><input type="checkbox" class="srt_toggle_known" data-kind="npc"  data-id="${item.id}" ${item.knownToUser?'checked':''}> 🔓</label>`
+      ? `<label title="Известно {{user}}"><input type="checkbox" class="srt_toggle_known" data-kind="npc"  data-id="${item.id}" ${item.knownToUser ? 'checked' : ''}> 🔓</label>`
       : kind === 'user'
-      ? `<label title="Известно {{char}}"><input type="checkbox" class="srt_toggle_known" data-kind="user" data-id="${item.id}" ${item.knownToNpc?'checked':''}> 🔓</label>`
+      ? `<label title="Известно {{char}}"><input type="checkbox" class="srt_toggle_known" data-kind="user" data-id="${item.id}" ${item.knownToNpc ? 'checked' : ''}> 🔓</label>`
       : '';
     return `
       <div class="item" data-kind="${kind}" data-id="${item.id}">
@@ -870,8 +831,8 @@ ${history}
 
   async function renderDrawer() {
     ensureDrawer();
-    const state   = await getChatState();
-    const npcName = getActiveNpcNameForUi();
+    const state    = await getChatState();
+    const npcName  = getActiveNpcNameForUi();
     const settings = getSettings();
 
     $('#srt_subtitle').text(`Чат: ${npcName}  •  данные хранятся отдельно для каждого чата`);
@@ -885,7 +846,7 @@ ${history}
           <div class="pill">Раскрыто: <b class="g">${revealed}</b></div>
           <div class="pill">Скрыто: <b class="r">${hidden}</b></div>
           <label class="srt-autodetect-toggle" title="Авто-детект раскрытий по маркерам [REVEAL:...]">
-            <input type="checkbox" id="srt_autodetect_cb" ${settings.autoDetect?'checked':''}> Авто-детект
+            <input type="checkbox" id="srt_autodetect_cb" ${settings.autoDetect ? 'checked' : ''}> Авто-детект
           </label>
         </div>
         <div class="srt-scan-hint">
@@ -901,7 +862,7 @@ ${history}
       <div class="section">
         <h4>📖 Секреты {{char}} <small>(🔓 = известно {{user}})</small></h4>
         <div class="list">
-          ${state.npcSecrets.map(s => renderItemRow(s,'npc')).join('') || '<div class="item"><div class="txt muted">—</div></div>'}
+          ${state.npcSecrets.map(s => renderItemRow(s, 'npc')).join('') || '<div class="item"><div class="txt muted">—</div></div>'}
         </div>
         <div class="addrow">
           <input type="text" id="srt_add_npc_text" placeholder="Новый секрет {{char}}…">
@@ -914,7 +875,7 @@ ${history}
       <div class="section">
         <h4>👁️ Секреты {{user}} <small>(🔓 = известно {{char}})</small></h4>
         <div class="list">
-          ${state.userSecrets.map(s => renderItemRow(s,'user')).join('') || '<div class="item"><div class="txt muted">—</div></div>'}
+          ${state.userSecrets.map(s => renderItemRow(s, 'user')).join('') || '<div class="item"><div class="txt muted">—</div></div>'}
         </div>
         <div class="addrow">
           <input type="text" id="srt_add_user_text" placeholder="Новый секрет {{user}}…">
@@ -927,7 +888,7 @@ ${history}
       <div class="section">
         <h4>🤝 Общие секреты</h4>
         <div class="list">
-          ${state.mutualSecrets.map(s => renderItemRow(s,'mutual')).join('') || '<div class="item"><div class="txt muted">—</div></div>'}
+          ${state.mutualSecrets.map(s => renderItemRow(s, 'mutual')).join('') || '<div class="item"><div class="txt muted">—</div></div>'}
         </div>
         <div class="addrow">
           <input type="text" id="srt_add_mutual_text" placeholder="Новый общий секрет…">
@@ -974,17 +935,17 @@ ${history}
     if (kind === 'npc') {
       const text = String($('#srt_add_npc_text').val() ?? '').trim();
       if (!text) return toastr.warning('Введите текст секрета');
-      state.npcSecrets.unshift({ id: makeId(), text, tag: String($('#srt_add_npc_tag').val()||'none'), knownToUser: Boolean($('#srt_add_npc_known').prop('checked')) });
+      state.npcSecrets.unshift({ id: makeId(), text, tag: String($('#srt_add_npc_tag').val() || 'none'), knownToUser: Boolean($('#srt_add_npc_known').prop('checked')) });
       $('#srt_add_npc_text').val(''); $('#srt_add_npc_known').prop('checked', false);
     } else if (kind === 'user') {
       const text = String($('#srt_add_user_text').val() ?? '').trim();
       if (!text) return toastr.warning('Введите текст секрета');
-      state.userSecrets.unshift({ id: makeId(), text, tag: String($('#srt_add_user_tag').val()||'none'), knownToNpc: Boolean($('#srt_add_user_known').prop('checked')) });
+      state.userSecrets.unshift({ id: makeId(), text, tag: String($('#srt_add_user_tag').val() || 'none'), knownToNpc: Boolean($('#srt_add_user_known').prop('checked')) });
       $('#srt_add_user_text').val(''); $('#srt_add_user_known').prop('checked', false);
     } else {
       const text = String($('#srt_add_mutual_text').val() ?? '').trim();
       if (!text) return toastr.warning('Введите текст секрета');
-      state.mutualSecrets.unshift({ id: makeId(), text, tag: String($('#srt_add_mutual_tag').val()||'none') });
+      state.mutualSecrets.unshift({ id: makeId(), text, tag: String($('#srt_add_mutual_tag').val() || 'none') });
       $('#srt_add_mutual_text').val('');
     }
 
@@ -1007,14 +968,14 @@ ${history}
 
   async function toggleKnown(kind, id, value) {
     const state = await getChatState();
-    if (kind === 'npc') { const it = state.npcSecrets.find(x => x.id === id); if (it) it.knownToUser = value; }
+    if (kind === 'npc')  { const it = state.npcSecrets.find(x => x.id === id);  if (it) it.knownToUser = value; }
     if (kind === 'user') { const it = state.userSecrets.find(x => x.id === id); if (it) it.knownToNpc = value; }
     await ctx().saveMetadata();
     await saveBackup();
     await updateInjectedPrompt();
   }
 
-  // ─── Import / Export / Prompt preview ───────────────────────────────────────
+  // ─── Test API ─────────────────────────────────────────────────────────────────
 
   async function testApiAndJson() {
     const $btn = $('#srt_quick_test');
@@ -1027,7 +988,6 @@ ${history}
 
       rawResponse = await aiGenerate(user, system);
 
-      // Пробуем парсить тем же кодом что при сканировании
       function extractJson(s) {
         let t = s.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
         const start = t.indexOf('{'); const end = t.lastIndexOf('}');
@@ -1050,7 +1010,7 @@ ${history}
           `${status}\n\n━━━ СЫРОЙ ОТВЕТ МОДЕЛИ ━━━\n${rawResponse}\n\n━━━ ПОСЛЕ ОЧИСТКИ ━━━\n${cleaned}\n\n━━━ РАСПАРСЕННЫЙ ОБЪЕКТ ━━━\n${JSON.stringify(parsed, null, 2)}`
         )}</pre>`
       );
-    } catch(e) {
+    } catch (e) {
       await ctx().Popup.show.text('🧪 Тест API — ОШИБКА',
         `<pre style="white-space:pre-wrap;font-size:11px;font-family:Consolas,monospace;color:#e74c3c;max-height:65vh;overflow:auto">${escapeHtml(
           `❌ ${e.message}\n\n━━━ СЫРОЙ ОТВЕТ (если был) ━━━\n${rawResponse || '[пусто — ошибка до получения ответа]'}`
@@ -1062,15 +1022,12 @@ ${history}
   }
 
   async function showDebugInfo() {
-    const state   = await getChatState();
+    const state    = await getChatState();
     const settings = getSettings();
-    const depth   = settings.scanDepth || 30;
+    const depth    = settings.scanDepth || 30;
 
-    // — Что видит модель каждый ход (инжектируемый блок) —
     const injected = buildPromptBlock(state);
-
-    // — Что уйдёт при сканировании —
-    const history = getRecentMessages(depth);
+    const history  = getRecentMessages(depth);
     const existingList = [
       ...state.npcSecrets.map(s    => `[{{char}}] ${s.text}`),
       ...state.userSecrets.map(s   => `[{{user}}] ${s.text}`),
@@ -1081,16 +1038,11 @@ ${history}
       : '';
 
     const scanSystem = `[SYSTEM PROMPT для сканирования]\n\nТы аналитик RP-диалогов. Извлекай ТОЛЬКО информацию которую один персонаж скрывает от другого...\n${existingBlock}`;
-
-    // — Авто-детект —
     const autoInfo = settings.autoDetect
       ? `✅ Включён\nТриггер: каждое сообщение {{char}} (MESSAGE_RECEIVED)\nРегекс: [REVEAL: текст] / [РАСКРЫТИЕ: текст]`
       : `❌ Выключен`;
 
-    // — Карточка персонажа —
     const card = getCharacterCard();
-
-    // — Привязка чата —
     const boundKey = currentChatBoundKey();
     const apiMode = getBaseUrl() && settings.apiKey
       ? `🔌 Свой API: ${getBaseUrl()}/v1/chat/completions\n   Модель: ${settings.apiModel || 'gpt-4o-mini'}`
@@ -1133,23 +1085,18 @@ ${history}
     );
   }
 
-  // ─── Backup helpers ──────────────────────────────────────────────────────────
+  // ─── Backup ──────────────────────────────────────────────────────────────────
 
-  const BACKUP_KEY = 'srt_backup_v1'; // localStorage — выживает при любых сбоях ST
+  const BACKUP_KEY = 'srt_backup_v1';
 
-  // Сохраняем бэкап в localStorage (до 5 слотов, по одному на чат-ключ)
   async function saveBackup() {
     try {
       const state  = await getChatState();
       const key    = currentChatBoundKey();
       const raw    = localStorage.getItem(BACKUP_KEY);
       const store  = raw ? JSON.parse(raw) : {};
-      store[key] = {
-        ts:    Date.now(),
-        state: structuredClone(state),
-      };
-      // Держим не больше 10 слотов — удаляем самые старые
-      const entries = Object.entries(store).sort((a,b) => (b[1].ts||0) - (a[1].ts||0));
+      store[key] = { ts: Date.now(), state: structuredClone(state) };
+      const entries = Object.entries(store).sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
       const trimmed = Object.fromEntries(entries.slice(0, 10));
       localStorage.setItem(BACKUP_KEY, JSON.stringify(trimmed));
     } catch (e) {
@@ -1167,18 +1114,20 @@ ${history}
     } catch { return null; }
   }
 
-  // Скачиваем JSON-файл на устройство
+  // ─── Download helper ─────────────────────────────────────────────────────────
+
   function downloadJson(filename, obj) {
     const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
-    a.href = url; a.download = filename;
+    a.href     = url;
+    a.download = filename;
+    a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
-    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
   }
 
-  // Валидируем и нормализуем импортированный объект
   function validateImport(p) {
     if (!p || typeof p !== 'object') throw new Error('Не объект');
     return {
@@ -1189,17 +1138,24 @@ ${history}
     };
   }
 
-  // ─── Export ───────────────────────────────────────────────────────────────────
+  // ─── Export ──────────────────────────────────────────────────────────────────
+  // BUG FIX: Previously used `await ctx().Popup.show.text(...)` — this promise
+  // resolves only AFTER the popup is CLOSED, so all addEventListener calls
+  // after it ran on DOM elements that no longer existed.
+  // Fix: call Popup without await, then attach handlers via setTimeout(0)
+  // so the popup has time to render before we query the DOM.
 
   async function exportJson() {
-    const state    = await getChatState();
-    const npcName  = getActiveNpcNameForUi();
-    const ts       = new Date().toISOString().slice(0,19).replace('T','_').replace(/:/g,'-');
-    const filename = `srt_${npcName.replace(/[^a-zа-яёA-ZА-ЯЁ0-9]/gi,'_').slice(0,30)}_${ts}.json`;
-    const json     = JSON.stringify(state, null, 2);
-    const total    = state.npcSecrets.length + state.userSecrets.length + state.mutualSecrets.length;
+    const state   = await getChatState();
+    const npcName = getActiveNpcNameForUi();
+    const ts      = new Date().toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-');
+    const filename = `srt_${npcName.replace(/[^a-zа-яёA-ZА-ЯЁ0-9]/gi, '_').slice(0, 30)}_${ts}.json`;
+    const json    = JSON.stringify(state, null, 2);
+    const total   = state.npcSecrets.length + state.userSecrets.length + state.mutualSecrets.length;
 
-    await ctx().Popup.show.text('💾 Экспорт секретов',
+    // ← NO await here: the promise resolves when popup is closed,
+    //   so we must NOT await before attaching handlers.
+    ctx().Popup.show.text('💾 Экспорт секретов',
       `<div style="font-family:Consolas,monospace;font-size:12px">
         <div style="margin-bottom:10px;opacity:.8">
           Персонаж: <b>${escapeHtml(npcName)}</b> · Секретов всего: <b>${total}</b>
@@ -1216,30 +1172,36 @@ ${history}
       </div>`
     );
 
-    // Вешаем обработчики после рендера попапа
-    document.getElementById('srt_export_download')?.addEventListener('click', () => {
-      downloadJson(filename, state);
-      toastr.success(`Файл "${filename}" сохранён`);
-    });
-    document.getElementById('srt_export_copy')?.addEventListener('click', () => {
-      navigator.clipboard?.writeText(json).then(
-        () => toastr.success('JSON скопирован в буфер обмена'),
-        () => toastr.error('Не удалось скопировать — выдели текст вручную')
-      );
-    });
+    // setTimeout(0) gives the browser one tick to render the popup HTML into DOM
+    setTimeout(() => {
+      document.getElementById('srt_export_download')?.addEventListener('click', () => {
+        downloadJson(filename, state);
+        toastr.success(`Файл "${filename}" сохранён`);
+      });
+      document.getElementById('srt_export_copy')?.addEventListener('click', () => {
+        navigator.clipboard?.writeText(json).then(
+          () => toastr.success('JSON скопирован в буфер обмена'),
+          () => toastr.error('Не удалось скопировать — выдели текст вручную')
+        );
+      });
+    }, 0);
   }
 
-  // ─── Import ───────────────────────────────────────────────────────────────────
+  // ─── Import ──────────────────────────────────────────────────────────────────
+  // Same BUG FIX: removed await before Popup call and use setTimeout(0)
+  // so handlers are attached after the popup renders.
 
   async function importJson() {
-    const backup  = loadBackup();
+    const backup   = loadBackup();
     const backupTs = backup ? new Date(backup.ts).toLocaleString('ru') : null;
     const backupTotal = backup
-      ? (backup.state.npcSecrets?.length||0) + (backup.state.userSecrets?.length||0) + (backup.state.mutualSecrets?.length||0)
+      ? (backup.state.npcSecrets?.length  || 0)
+      + (backup.state.userSecrets?.length || 0)
+      + (backup.state.mutualSecrets?.length || 0)
       : 0;
 
-    // Показываем диалог с тремя вариантами
-    await ctx().Popup.show.text('📂 Импорт секретов',
+    // ← NO await here (same reason as exportJson)
+    ctx().Popup.show.text('📂 Импорт секретов',
       `<div style="font-family:Consolas,monospace;font-size:12px">
 
         ${backup ? `
@@ -1273,69 +1235,75 @@ ${history}
       </div>`
     );
 
-    // Восстановить из бэкапа
-    document.getElementById('srt_import_from_backup')?.addEventListener('click', async () => {
-      try {
-        const p = validateImport(backup.state);
-        await applyImport(p);
-        toastr.success(`✅ Восстановлено из бэкапа (${backupTs})`);
-      } catch(e) { toastr.error(`Ошибка восстановления: ${e.message}`); }
-    });
+    // Attach all handlers after popup renders
+    setTimeout(() => {
+      // Восстановить из бэкапа
+      document.getElementById('srt_import_from_backup')?.addEventListener('click', async () => {
+        try {
+          const p = validateImport(backup.state);
+          await applyImport(p);
+          toastr.success(`✅ Восстановлено из бэкапа (${backupTs})`);
+        } catch (e) { toastr.error(`Ошибка восстановления: ${e.message}`); }
+      });
 
-    // Кнопка выбора файла
-    document.getElementById('srt_import_file_btn')?.addEventListener('click', () => {
-      document.getElementById('srt_import_file_input')?.click();
-    });
+      // Кнопка выбора файла — программно кликает на hidden input
+      document.getElementById('srt_import_file_btn')?.addEventListener('click', () => {
+        document.getElementById('srt_import_file_input')?.click();
+      });
 
-    // Читаем файл
-    document.getElementById('srt_import_file_input')?.addEventListener('change', (ev) => {
-      const file = ev.target.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const text = e.target.result;
-        document.getElementById('srt_import_textarea').value = text;
-        document.getElementById('srt_import_status').textContent = `📄 Загружен: ${file.name}`;
-      };
-      reader.onerror = () => toastr.error('Не удалось прочитать файл');
-      reader.readAsText(file);
-    });
+      // Читаем файл и кладём содержимое в textarea
+      document.getElementById('srt_import_file_input')?.addEventListener('change', (ev) => {
+        const file = ev.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const text = e.target.result;
+          const ta = document.getElementById('srt_import_textarea');
+          if (ta) ta.value = text;
+          const status = document.getElementById('srt_import_status');
+          if (status) status.textContent = `📄 Загружен: ${file.name}`;
+        };
+        reader.onerror = () => toastr.error('Не удалось прочитать файл');
+        reader.readAsText(file);
+      });
 
-    // Применить JSON из textarea
-    document.getElementById('srt_import_apply')?.addEventListener('click', async () => {
-      const raw = document.getElementById('srt_import_textarea')?.value?.trim();
-      if (!raw) { toastr.warning('Вставьте JSON или выберите файл'); return; }
-      try {
-        const p = validateImport(JSON.parse(raw));
-        await applyImport(p);
-        toastr.success('✅ Импорт выполнен успешно');
-      } catch(e) {
-        toastr.error(`Ошибка импорта: ${e.message}`);
-        document.getElementById('srt_import_status').textContent = `❌ ${e.message}`;
-      }
-    });
+      // Применить JSON из textarea
+      document.getElementById('srt_import_apply')?.addEventListener('click', async () => {
+        const raw = document.getElementById('srt_import_textarea')?.value?.trim();
+        if (!raw) { toastr.warning('Вставьте JSON или выберите файл'); return; }
+        try {
+          const p = validateImport(JSON.parse(raw));
+          await applyImport(p);
+          toastr.success('✅ Импорт выполнен успешно');
+        } catch (e) {
+          toastr.error(`Ошибка импорта: ${e.message}`);
+          const status = document.getElementById('srt_import_status');
+          if (status) status.textContent = `❌ ${e.message}`;
+        }
+      });
+    }, 0);
   }
 
-  // Применяет провалидированный объект как текущее состояние чата
   async function applyImport(p) {
     const { saveMetadata, chatMetadata } = ctx();
     const key = currentChatBoundKey();
     chatMetadata[key] = p;
     await saveMetadata();
-    await saveBackup(); // сразу бэкапим то что только что импортировали
+    await saveBackup();
     await updateInjectedPrompt();
     await renderDrawer();
   }
 
   async function showPromptPreview() {
     const state = await getChatState();
-    await ctx().Popup.show.text('Промпт SRT', `<pre style="white-space:pre-wrap;max-height:60vh;overflow:auto">${escapeHtml(buildPromptBlock(state))}</pre>`);
+    await ctx().Popup.show.text('Промпт SRT',
+      `<pre style="white-space:pre-wrap;max-height:60vh;overflow:auto">${escapeHtml(buildPromptBlock(state))}</pre>`
+    );
   }
 
   // ─── Settings panel ──────────────────────────────────────────────────────────
 
   async function mountSettingsUi() {
-    // Используем уникальный sentinel-ID вместо проверки на элемент который мог появиться из template.html
     if ($('#srt_settings_block').length) return;
     const target = $('#extensions_settings2').length ? '#extensions_settings2' : '#extensions_settings';
     if (!$(target).length) { console.warn('[SRT] settings container not found'); return; }
@@ -1349,18 +1317,18 @@ ${history}
         </div>
         <div class="srt-body">
           <div class="srt-row">
-            <label class="checkbox_label"><input type="checkbox" id="srt_enabled" ${s.enabled?'checked':''}><span>Включить инъекцию в промпт</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="srt_enabled" ${s.enabled ? 'checked' : ''}><span>Включить инъекцию в промпт</span></label>
           </div>
           <div class="srt-row">
-            <label class="checkbox_label"><input type="checkbox" id="srt_show_widget" ${s.showWidget?'checked':''}><span>Показывать плавающий виджет 🔐</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="srt_show_widget" ${s.showWidget ? 'checked' : ''}><span>Показывать плавающий виджет 🔐</span></label>
           </div>
           <div class="srt-row">
-            <label class="checkbox_label"><input type="checkbox" id="srt_autodetect" ${s.autoDetect?'checked':''}><span>Авто-детект раскрытий по маркеру [REVEAL:...]</span></label>
+            <label class="checkbox_label"><input type="checkbox" id="srt_autodetect" ${s.autoDetect ? 'checked' : ''}><span>Авто-детект раскрытий по маркеру [REVEAL:...]</span></label>
           </div>
           <div class="srt-row" style="gap:10px;align-items:center;">
             <label style="white-space:nowrap">Глубина сканирования:</label>
-            <input type="range" id="srt_scan_depth" min="10" max="200" step="10" value="${s.scanDepth||30}" style="flex:1;min-width:80px;">
-            <span id="srt_scan_depth_display" style="min-width:30px;text-align:right">${s.scanDepth||30}</span>
+            <input type="range" id="srt_scan_depth" min="10" max="200" step="10" value="${s.scanDepth || 30}" style="flex:1;min-width:80px;">
+            <span id="srt_scan_depth_display" style="min-width:30px;text-align:right">${s.scanDepth || 30}</span>
             <span>сообщ.</span>
           </div>
 
@@ -1370,12 +1338,12 @@ ${history}
 
             <span class="srt-api-label">Endpoint</span>
             <div class="srt-row">
-              <input type="text" id="srt_api_endpoint" class="srt-api-field" placeholder="https://api.openai.com/v1" value="${escapeHtml(s.apiEndpoint||'')}">
+              <input type="text" id="srt_api_endpoint" class="srt-api-field" placeholder="https://api.openai.com/v1" value="${escapeHtml(s.apiEndpoint || '')}">
             </div>
 
             <span class="srt-api-label">API Key</span>
             <div class="srt-row">
-              <input type="password" id="srt_api_key" class="srt-api-field" placeholder="sk-..." value="${s.apiKey||''}">
+              <input type="password" id="srt_api_key" class="srt-api-field" placeholder="sk-..." value="${s.apiKey || ''}">
               <button type="button" id="srt_api_key_toggle" class="menu_button" style="padding:5px 10px;flex-shrink:0">👁</button>
             </div>
 
@@ -1400,6 +1368,7 @@ ${history}
               <span id="srt_api_status" style="font-size:11px;opacity:0.75;flex:1"></span>
             </div>
           </div>
+
           <div class="srt-row srt-row-slim">
             <button class="menu_button" id="srt_open_drawer">Открыть трекер</button>
             <button class="menu_button" id="srt_scan_settings_btn">🔍 Сканировать чат</button>
@@ -1439,7 +1408,6 @@ ${history}
       ctx().saveSettingsDebounced();
     });
 
-    // API settings — сохраняем при любом изменении
     $('#srt_api_endpoint').on('input', () => { s.apiEndpoint = $('#srt_api_endpoint').val().trim(); ctx().saveSettingsDebounced(); });
     $('#srt_api_key').on('input',      () => { s.apiKey      = $('#srt_api_key').val().trim();      ctx().saveSettingsDebounced(); });
 
@@ -1448,16 +1416,13 @@ ${history}
       inp.type = inp.type === 'password' ? 'text' : 'password';
     });
 
-    // Model select — сохраняем выбранную модель
     $('#srt_api_model_select').on('change', () => {
       s.apiModel = $('#srt_api_model_select').val();
       ctx().saveSettingsDebounced();
     });
 
-    // Кнопка обновить модели
     $('#srt_refresh_models').on('click', onRefreshModels);
 
-    // Обновить превью персонажа
     function updateCharPreview() {
       const c = ctx();
       try {
@@ -1477,7 +1442,6 @@ ${history}
     }
     updateCharPreview();
 
-    // Делегирование на document — устойчиво к любому порядку рендеринга и template.html
     $(document)
       .off('click.srt_settings')
       .on('click.srt_settings', '#srt_open_drawer',       () => openDrawer(true))
@@ -1498,10 +1462,10 @@ ${history}
           $btn.prop('disabled', false).text('🧪 Тест соединения');
         }
       })
-      .on('click.srt_settings', '#srt_prompt_preview',    () => showPromptPreview())
-      .on('click.srt_settings', '#srt_export_json',       () => exportJson())
-      .on('click.srt_settings', '#srt_import_json',       () => importJson())
-      .on('click.srt_settings', '#srt_reset_widget_pos',  () => {
+      .on('click.srt_settings', '#srt_prompt_preview', () => showPromptPreview())
+      .on('click.srt_settings', '#srt_export_json',    () => exportJson())
+      .on('click.srt_settings', '#srt_import_json',    () => importJson())
+      .on('click.srt_settings', '#srt_reset_widget_pos', () => {
         try { localStorage.removeItem(FAB_POS_KEY); } catch {}
         setFabDefaultPosition();
         toastr.success('Позиция сброшена');
@@ -1524,20 +1488,19 @@ ${history}
       if ($('#srt_drawer').hasClass('srt-open')) renderDrawer();
     });
 
-    // After {{char}} replies — check for [REVEAL:...] markers
     eventSource.on(event_types.MESSAGE_RECEIVED, async (idx) => {
       const { chat } = ctx();
       const msg = chat?.[idx];
-      if (!msg || msg.is_user) return;  // только {{char}}
+      if (!msg || msg.is_user) return;
       await detectRevealInMessage(msg.mes || '');
-      await renderWidget(); // refresh counts
+      await renderWidget();
     });
   }
 
   // ─── Boot ────────────────────────────────────────────────────────────────────
 
   jQuery(() => {
-    try { wireChatEvents(); console.log('[SRT] v0.5.3 loaded'); }
+    try { wireChatEvents(); console.log('[SRT] v0.5.4 loaded'); }
     catch (e) { console.error('[SRT] init failed', e); }
   });
 
